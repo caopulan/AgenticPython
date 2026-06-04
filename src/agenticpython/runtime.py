@@ -199,13 +199,16 @@ class AgenticRunner:
         frame.body_index += 1
 
     def _execute_instruction(self, instruction: Instruction) -> str:
+        return self._execute_source(instruction.source, f"<agentpython:{instruction.id}>")
+
+    def _execute_source(self, source: str, filename: str) -> str:
         stream = io.StringIO()
         self._stdout_proxy.buffer = stream
         self._stderr_proxy.buffer = stream
         try:
             with contextlib.redirect_stdout(self._stdout_proxy), contextlib.redirect_stderr(self._stderr_proxy):
                 exec(
-                    compile(instruction.source, f"<agentpython:{instruction.id}>", "exec"),
+                    compile(source, filename, "exec"),
                     self.namespace,
                     self.namespace,
                 )
@@ -263,7 +266,18 @@ class AgenticRunner:
             return
         if op == "execute_now":
             assert operation.code is not None
-            exec(compile(operation.code, "<agentpython:execute_now>", "exec"), self.namespace, self.namespace)
+            stdout = self._execute_source(operation.code, "<agentpython:execute_now>")
+            self._record(
+                {
+                    "event": "execute_now",
+                    "operation": {
+                        "op": operation.op,
+                        "target": operation.target,
+                        "code": operation.code,
+                    },
+                    "stdout": stdout,
+                }
+            )
             return
 
         assert target is not None

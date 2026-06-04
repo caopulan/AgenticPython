@@ -185,6 +185,39 @@ def test_runner_captures_logging_configured_in_earlier_instruction(tmp_path):
     assert any(event.get("stdout") == "hello logging\n" for event in events)
 
 
+def test_execute_now_stdout_is_routed_to_event_sink_without_echoing(tmp_path, capsys):
+    script = tmp_path / "demo.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    events = []
+    client = ScriptedActionClient(
+        {
+            "human": {
+                "operations": [
+                    {"op": "execute_now", "code": "print('AI 回答应该进上方 log')"}
+                ],
+                "resume": True,
+            }
+        }
+    )
+    runner = AgenticRunner.from_path(
+        script,
+        decision_client=client,
+        out_dir=tmp_path / "run",
+        echo_stdout=False,
+        event_sink=events.append,
+    )
+    session = InteractiveSession(runner)
+
+    session.submit_instruction("print a reply")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert any(
+        event.get("event") == "execute_now" and event.get("stdout") == "AI 回答应该进上方 log\n"
+        for event in events
+    )
+
+
 def test_stop_before_first_tick_still_writes_artifacts(tmp_path):
     script = tmp_path / "demo.py"
     script.write_text("x = 1\n", encoding="utf-8")
@@ -287,6 +320,17 @@ def test_tui_log_renders_user_messages_with_label_and_color_kind():
 
     assert rendered[0].text == "YOU       学习率调整为现在的5倍吧"
     assert rendered[0].kind == "user"
+
+
+def test_tui_log_renders_execute_now_stdout_as_agent_message():
+    log = TuiLog(log_level="INFO")
+
+    log.event_sink({"event": "execute_now", "stdout": "AI 回答应该进上方 log\n"})
+
+    rendered = log.render_lines(width=80, max_lines=10)
+
+    assert rendered[0].text == "AGENT     AI 回答应该进上方 log"
+    assert rendered[0].kind == "agent"
 
 
 def test_prompt_view_uses_display_width_for_cjk_cursor_position():

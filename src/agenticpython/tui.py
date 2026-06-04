@@ -99,6 +99,10 @@ class TuiLog:
         if event_name == "trigger":
             self.append(f"{event.get('trigger')} context captured; waiting for Codex", kind="trigger")
             return
+        if event_name == "execute_now":
+            if event.get("stdout"):
+                self.append(event["stdout"], kind="agent")
+            return
         if event_name == "patch":
             for operation in event.get("action", {}).get("operations", []):
                 self.append(_operation_summary(operation), kind="patch")
