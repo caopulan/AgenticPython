@@ -5,8 +5,8 @@ import curses
 from dataclasses import dataclass
 from pathlib import Path
 import threading
-import textwrap
 import time
+import unicodedata
 from typing import Any
 
 from .codex_client import CodexSdkDecisionClient
@@ -80,7 +80,7 @@ class TuiLog:
             segments = _wrap_log_text(entry.text, available)
             for index, segment in enumerate(segments):
                 line_prefix = prefix if index == 0 else continuation
-                rendered.append(RenderedLogLine(text=f"{line_prefix}{segment}"[:width], kind=entry.kind))
+                rendered.append(RenderedLogLine(text=_clip_to_cells(f"{line_prefix}{segment}", width), kind=entry.kind))
         return rendered[-max_lines:]
 
     def event_sink(self, event: dict[str, Any]) -> None:
@@ -109,16 +109,84 @@ class TuiLog:
 def _wrap_log_text(text: str, width: int) -> list[str]:
     lines: list[str] = []
     for physical_line in str(text).expandtabs(4).splitlines() or [""]:
-        wrapped = textwrap.wrap(
-            physical_line,
-            width=width,
-            break_long_words=True,
-            break_on_hyphens=False,
-            drop_whitespace=False,
-            replace_whitespace=False,
-        )
-        lines.extend(wrapped or [""])
+        lines.extend(_wrap_to_cells(physical_line, width))
     return lines
+
+
+def _wrap_to_cells(text: str, width: int) -> list[str]:
+    if not text:
+        return [""]
+    lines: list[str] = []
+    current: list[str] = []
+    current_width = 0
+    for character in text:
+        character_width = _cell_width(character)
+        if current and current_width + character_width > width:
+            lines.append("".join(current))
+            current = []
+            current_width = 0
+        if character_width > width and not current:
+            lines.append("")
+            continue
+        current.append(character)
+        current_width += character_width
+    if current:
+        lines.append("".join(current))
+    return lines or [""]
+
+
+def _cell_width(character: str) -> int:
+    if not character:
+        return 0
+    if unicodedata.combining(character):
+        return 0
+    category = unicodedata.category(character)
+    if category in {"Mn", "Me", "Cf", "Cc"}:
+        return 0
+    if unicodedata.east_asian_width(character) in {"F", "W"}:
+        return 2
+    return 1
+
+
+def _display_width(text: str) -> int:
+    return sum(_cell_width(character) for character in text)
+
+
+def _clip_to_cells(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    result: list[str] = []
+    used = 0
+    for character in text:
+        character_width = _cell_width(character)
+        if used + character_width > width:
+            break
+        result.append(character)
+        used += character_width
+    return "".join(result)
+
+
+def _clip_tail_to_cells(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    result: list[str] = []
+    used = 0
+    for character in reversed(text):
+        character_width = _cell_width(character)
+        if used + character_width > width:
+            break
+        result.append(character)
+        used += character_width
+    return "".join(reversed(result))
+
+
+def _prompt_view(input_text: str, width: int) -> tuple[str, int]:
+    prompt = "› "
+    max_line_width = max(0, width - 1)
+    prompt_width = _display_width(prompt)
+    visible_input = _clip_tail_to_cells(input_text, max_line_width - prompt_width)
+    line = _clip_to_cells(f"{prompt}{visible_input}", max_line_width)
+    return line, _display_width(line)
 
 
 def _operation_summary(operation: dict[str, Any]) -> str:
@@ -270,9 +338,9 @@ def _render(stdscr: Any, session: InteractiveSession, log: TuiLog, input_text: s
         max(0, width - 1),
         _color_pair(2),
     )
-    prompt = "› "
-    stdscr.addnstr(height - 1, 0, prompt + input_text, max(0, width - 1), _color_pair(4))
-    stdscr.move(height - 1, min(width - 1, len(input_text) + 2))
+    prompt_line, cursor_col = _prompt_view(input_text, width)
+    stdscr.addnstr(height - 1, 0, prompt_line, max(0, width - 1), _color_pair(4))
+    stdscr.move(height - 1, min(width - 1, cursor_col))
     stdscr.refresh()
 
 

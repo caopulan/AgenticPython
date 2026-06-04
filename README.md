@@ -66,6 +66,9 @@ Commands:
   output, Codex triggers, patch summaries, agent state, and errors are visually
   separated. Patch code is summarized in the TUI; the full patch is still stored
   in `journal.jsonl`.
+- Wide characters such as Chinese text are wrapped and clipped by terminal cell
+  width, so long agent/program output stays in the log pane and the input cursor
+  remains aligned.
 
 For a real CPU MNIST training script, install the optional dependencies and run:
 

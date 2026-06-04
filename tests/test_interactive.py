@@ -3,7 +3,7 @@ import time
 from agenticpython.actions import ScriptedActionClient
 from agenticpython.interactive import BackgroundTicker, InteractiveSession
 from agenticpython.runtime import AgenticRunner
-from agenticpython.tui import TuiLog
+from agenticpython.tui import TuiLog, _display_width, _prompt_view
 
 
 def test_user_instruction_pauses_applies_patch_and_waits_for_resume(tmp_path):
@@ -264,6 +264,20 @@ def test_tui_log_collapses_patch_code_and_wraps_to_width():
     assert not any("batch_loss_trace = []" in line.text for line in rendered)
 
 
+def test_tui_log_wraps_wide_cjk_by_display_cells():
+    log = TuiLog(log_level="INFO")
+    log.append(
+        "目前运行在 epoch 1/3，batch 9/938，当前步骤是记录训练 loss，刚完成本 batch 的 "
+        "train_one_minibatch loss=2.2553。",
+        kind="program",
+    )
+
+    rendered = log.render_lines(width=40, max_lines=10)
+
+    assert len(rendered) > 1
+    assert all(_display_width(line.text) <= 40 for line in rendered)
+
+
 def test_tui_log_renders_user_messages_with_label_and_color_kind():
     log = TuiLog(log_level="INFO")
 
@@ -273,3 +287,11 @@ def test_tui_log_renders_user_messages_with_label_and_color_kind():
 
     assert rendered[0].text == "YOU       学习率调整为现在的5倍吧"
     assert rendered[0].kind == "user"
+
+
+def test_prompt_view_uses_display_width_for_cjk_cursor_position():
+    line, cursor_col = _prompt_view("学习率调整为现在的5倍吧", width=20)
+
+    assert _display_width(line) <= 20
+    assert cursor_col == _display_width(line)
+    assert cursor_col <= 19
