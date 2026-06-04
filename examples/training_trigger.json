@@ -1,0 +1,4 @@
+{
+  "condition": "step == 4",
+  "instruction": "Return exactly this JSON action: {\"operations\":[{\"op\":\"insert_before\",\"target\":\"__current__\",\"code\":\"if step >= 4:\\n    lr = 0.01\"},{\"op\":\"insert_after\",\"target\":\"__current__\",\"code\":\"if step >= 4:\\n    evals.append(step)\"}],\"resume\":true}. Do not add prose."
+}
