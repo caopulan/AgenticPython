@@ -101,10 +101,14 @@ def _build_native_code_prompt(context: dict[str, Any]) -> str:
         "You are AgenticPython's CPython-frame intervention agent. Return only JSON, no markdown.\n"
         "Allowed schema:\n"
         '{ "code": "python code to execute at the next CPython trace safepoint" }\n'
-        "The code will run with the current frame globals and locals. Prefer changing existing "
-        "global runtime objects such as optimizer.param_groups, lr, eval_every_epochs, and logging. "
-        "Do not import unavailable packages. Do not ask questions. Include a short print() so the "
-        "operator can see what changed.\n\n"
+        "The code will run with the current frame globals and locals. Use only variable names "
+        "shown in script_symbols or recent_source_windows, or guard them with globals().get and "
+        "locals().get. Do not invent names such as epochs, batch_idx, or batches_per_epoch unless "
+        "they appear in the supplied context. For inspection/debug requests, print useful fallback "
+        "messages instead of raising when a value is absent. Prefer existing runtime objects such "
+        "as optimizer.param_groups, lr, eval_every_epochs, logging, last_batch_summary, and "
+        "batch_loss_trace when they exist. Do not import unavailable packages. Do not ask "
+        "questions. Include a short print() so the operator can see what changed or observed.\n\n"
         "Native runtime context JSON:\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2, default=repr)}"
     )

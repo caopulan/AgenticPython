@@ -67,3 +67,11 @@ executes that file in the current frame globals and locals at the next matching
 trace safepoint. Natural-language input pauses the process, asks Codex SDK for
 native Python code, queues it through the same command file, and waits for
 `/resume`.
+
+Each native TUI run writes:
+
+- `journal.jsonl` for TUI-visible logs, user inputs, Codex request contexts,
+  Codex returned code, stderr, and process lifecycle events.
+- `frame_events.jsonl` for CPython frame events.
+- `commands.jsonl` and `commands/*.py` for the command channel and exact
+  injected code.

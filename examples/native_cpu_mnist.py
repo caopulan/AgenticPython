@@ -174,6 +174,34 @@ def log_training_progress(epoch, batch_index, total_batches, loss_value, running
     )
 
 
+def summarize_current_grads():
+    total_sq = 0.0
+    max_abs = 0.0
+    param_count = 0
+    tensor_count = 0
+    for _, parameter in model.named_parameters():
+        if parameter.grad is None:
+            continue
+        grad = parameter.grad.detach()
+        total_sq += float((grad * grad).sum().item())
+        max_abs = max(max_abs, float(grad.abs().max().item()))
+        param_count += grad.numel()
+        tensor_count += 1
+    summary = {
+        "epoch": last_batch_summary.get("epoch"),
+        "batch": last_batch_summary.get("batch"),
+        "total_batches": last_batch_summary.get("total_batches"),
+        "batch_loss": last_batch_summary.get("batch_loss"),
+        "running_loss": last_batch_summary.get("running_loss"),
+        "lr": optimizer.param_groups[0]["lr"],
+        "grad_l2": total_sq ** 0.5,
+        "grad_max_abs": max_abs,
+        "grad_tensors": tensor_count,
+        "grad_params": param_count,
+    }
+    return summary
+
+
 def maybe_finish_epoch(epoch, batch_index, total_batches):
     global epoch_loss_total, epoch_examples
     if batch_index != total_batches:

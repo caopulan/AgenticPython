@@ -133,6 +133,17 @@ the run directory, and polls an append-only command file at CPython trace
 safepoints. The controller sets `PYTHON_AGENTIC_FILTER` to the script path so
 PyTorch internals are not traced line by line.
 
+Native run artifacts:
+
+- `journal.jsonl` records TUI-visible logs, user inputs, pause/resume events,
+  Codex request context, Codex returned code, queued command paths, stderr, and
+  process exit status.
+- `frame_events.jsonl` records CPython `call`, `line`, `return`, and
+  `exception` frame events for the filtered script.
+- `commands.jsonl` is the append-only CPython command queue.
+- `commands/*.py` stores the exact Python code injected into the running
+  interpreter.
+
 Useful native TUI commands:
 
 - `/pause` asks CPython to stop at the next matching frame safepoint.

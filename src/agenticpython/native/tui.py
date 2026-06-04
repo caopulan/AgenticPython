@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 from collections import deque
 import curses
 from dataclasses import dataclass
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 import site
@@ -29,6 +31,7 @@ class NativeRunPaths:
     out_dir: Path
     events_path: Path
     commands_path: Path
+    journal_path: Path
     pause_path: Path
     command_dir: Path
 
@@ -38,6 +41,7 @@ def make_native_run_paths(out_dir: Path) -> NativeRunPaths:
         out_dir=out_dir,
         events_path=out_dir / "frame_events.jsonl",
         commands_path=out_dir / "commands.jsonl",
+        journal_path=out_dir / "journal.jsonl",
         pause_path=out_dir / "PAUSED",
         command_dir=out_dir / "commands",
     )
@@ -121,11 +125,13 @@ class NativeProcessSession:
         self._client_lock = threading.Lock()
         self._command_index = 0
         self._state_lock = threading.RLock()
+        self._journal_lock = threading.RLock()
 
     def start(self) -> None:
         self.paths.command_dir.mkdir(parents=True, exist_ok=True)
         self.paths.commands_path.write_text("", encoding="utf-8")
         self.paths.events_path.write_text("", encoding="utf-8")
+        self.paths.journal_path.write_text("", encoding="utf-8")
         if self.paths.pause_path.exists():
             self.paths.pause_path.unlink()
         env = build_native_env(
@@ -144,8 +150,22 @@ class NativeProcessSession:
             text=True,
             bufsize=1,
         )
-        self.log.append(f"started native CPython pid={self.process.pid} python={self.native_python}", kind="system")
-        self.log.append(f"events={self.paths.events_path}", kind="system")
+        self._write_journal(
+            "session_start",
+            {
+                "run_id": self.run_id,
+                "script": str(self.script_path),
+                "native_python": str(self.native_python),
+                "pid": self.process.pid,
+                "events_path": str(self.paths.events_path),
+                "commands_path": str(self.paths.commands_path),
+                "journal_path": str(self.paths.journal_path),
+                "python_agentic_filter": env.get("PYTHON_AGENTIC_FILTER"),
+            },
+        )
+        self.log_line(f"started native CPython pid={self.process.pid} python={self.native_python}", kind="system")
+        self.log_line(f"events={self.paths.events_path}", kind="system")
+        self.log_line(f"journal={self.paths.journal_path}", kind="system")
         self._start_thread(self._read_stdout)
         self._start_thread(self._read_stderr)
         self._start_thread(self._tail_events)
@@ -166,20 +186,24 @@ class NativeProcessSession:
         self.paths.pause_path.write_text("paused\n", encoding="utf-8")
         with self._state_lock:
             self.paused = True
-        self.log.append("pause requested; CPython will stop at the next trace safepoint", kind="system")
+        self.log_line(
+            "pause requested; CPython will stop at the next trace safepoint",
+            kind="system",
+            event="pause",
+        )
 
     def resume(self) -> None:
         if self.paths.pause_path.exists():
             self.paths.pause_path.unlink()
         with self._state_lock:
             self.paused = False
-        self.log.append("resumed", kind="system")
+        self.log_line("resumed", kind="system", event="resume")
 
     def stop(self) -> None:
         self.close()
         with self._state_lock:
             self.finished = True
-        self.log.append(f"stopped: artifacts at {self.out_dir}", kind="system")
+        self.log_line(f"stopped: artifacts at {self.out_dir}", kind="system", event="stop")
 
     def queue_code(self, code: str, *, source: str) -> Path:
         self.paths.command_dir.mkdir(parents=True, exist_ok=True)
@@ -187,15 +211,24 @@ class NativeProcessSession:
         code_path = self.paths.command_dir / f"command-{self._command_index:04d}.py"
         code_path.write_text(code.rstrip() + "\n", encoding="utf-8")
         write_exec_command(self.paths.commands_path, code_path)
-        self.log.append(f"queued native exec from {source}: {code_path.name}", kind="patch")
+        self._write_journal(
+            "command_queued",
+            {
+                "source": source,
+                "code_path": str(code_path),
+                "code": code,
+            },
+        )
+        self.log_line(f"queued native exec from {source}: {code_path.name}", kind="patch")
         preview = " ".join(line.strip() for line in code.splitlines() if line.strip())
         if preview:
-            self.log.append(preview[:160], kind="patch")
+            self.log_line(preview[:160], kind="patch")
         return code_path
 
     def submit_instruction(self, instruction: str, visible_log: list[str]) -> None:
+        self._write_journal("user_instruction", {"text": instruction})
         self.pause()
-        self.log.append("asking Codex for native CPython code...", kind="trigger")
+        self.log_line("asking Codex for native CPython code...", kind="trigger", event="codex_request_started")
         thread = threading.Thread(
             target=self._decide_and_queue_code,
             args=(instruction, visible_log),
@@ -205,6 +238,7 @@ class NativeProcessSession:
         self._threads.append(thread)
 
     def submit_btw(self, question: str, visible_log: list[str]) -> None:
+        self._write_journal("btw_question", {"text": question})
         thread = threading.Thread(
             target=self._answer_btw,
             args=(question, visible_log),
@@ -215,28 +249,21 @@ class NativeProcessSession:
 
     def _decide_and_queue_code(self, instruction: str, visible_log: list[str]) -> None:
         client = self._get_client()
-        code = client.decide_native_code(
-            {
-                "user_instruction": instruction,
-                "script": str(self.script_path),
-                "recent_log": visible_log[-80:],
-                "recent_frame_events": [_event_summary(event) for event in list(self.recent_events)[-40:]],
-            }
-        )
+        context = self._build_decision_context(instruction, visible_log)
+        self._write_journal("codex_request_context", context)
+        code = client.decide_native_code(context)
+        self._write_journal("codex_response_code", {"code": code})
         self.queue_code(code, source="Codex")
-        self.log.append("native instruction queued; still paused until /resume", kind="agent")
+        self.log_line("native instruction queued; still paused until /resume", kind="agent")
 
     def _answer_btw(self, question: str, visible_log: list[str]) -> None:
         client = self._get_client()
-        answer = client.ask_btw(
-            {
-                "question": question,
-                "script": str(self.script_path),
-                "recent_log": visible_log[-80:],
-                "recent_frame_events": [_event_summary(event) for event in list(self.recent_events)[-40:]],
-            }
-        )
-        self.log.append(answer, kind="agent")
+        context = self._build_decision_context(question, visible_log)
+        context["question"] = question
+        self._write_journal("btw_request_context", context)
+        answer = client.ask_btw(context)
+        self._write_journal("btw_response", {"answer": answer})
+        self.log_line(answer, kind="agent")
 
     def _get_client(self) -> CodexSdkDecisionClient:
         with self._client_lock:
@@ -252,12 +279,12 @@ class NativeProcessSession:
     def _read_stdout(self) -> None:
         assert self.process is not None and self.process.stdout is not None
         for line in self.process.stdout:
-            self.log.append(line.rstrip("\n"), kind="program")
+            self.log_line(line.rstrip("\n"), kind="program", event="stdout")
 
     def _read_stderr(self) -> None:
         assert self.process is not None and self.process.stderr is not None
         for line in self.process.stderr:
-            self.log.append(line.rstrip("\n"), kind="error")
+            self.log_line(line.rstrip("\n"), kind="error", event="stderr")
 
     def _tail_events(self) -> None:
         offset = 0
@@ -276,13 +303,14 @@ class NativeProcessSession:
         try:
             event = decode_event(line)
         except ProtocolError as exc:
-            self.log.append(f"bad frame event: {exc}", kind="error")
+            self.log_line(f"bad frame event: {exc}", kind="error", event="bad_frame_event")
             return
         self.recent_events.append(event)
         if self.log.log_level == "DEBUG" and event.filename.endswith(self.script_path.name):
-            self.log.append(
+            self.log_line(
                 f"{event.event} {Path(event.filename).name}:{event.lineno} {event.function}",
                 kind="trace",
+                event="trace_display",
             )
 
     def _wait_for_exit(self) -> None:
@@ -293,7 +321,47 @@ class NativeProcessSession:
             self.paused = False
         if self.paths.pause_path.exists():
             self.paths.pause_path.unlink()
-        self.log.append(f"native process exited rc={self.returncode}", kind="system")
+        self.log_line(f"native process exited rc={self.returncode}", kind="system", event="process_exit")
+
+    def log_line(
+        self,
+        line: str,
+        *,
+        kind: str = "system",
+        label: str | None = None,
+        event: str = "tui_log",
+    ) -> None:
+        self.log.append(line, kind=kind, label=label)
+        self._write_journal(event, {"kind": kind, "label": label, "text": line})
+
+    def _write_journal(self, event: str, payload: dict[str, Any]) -> None:
+        record = {
+            "ts": datetime.now().isoformat(timespec="milliseconds"),
+            "event": event,
+            "run_id": self.run_id,
+            **payload,
+        }
+        with self._journal_lock:
+            self.paths.journal_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.paths.journal_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+    def _build_decision_context(self, instruction: str, visible_log: list[str]) -> dict[str, Any]:
+        recent_events = list(self.recent_events)[-40:]
+        return {
+            "user_instruction": instruction,
+            "script": str(self.script_path),
+            "script_symbols": _script_symbols(self.script_path),
+            "recent_log": visible_log[-80:],
+            "recent_frame_events": [_event_summary(event) for event in recent_events],
+            "recent_source_windows": _source_windows(self.script_path, recent_events),
+            "runtime_notes": [
+                "Injected code runs at the next CPython trace safepoint with the current frame globals and locals.",
+                "Use only names visible in script_symbols/source windows, or guard lookups with globals().get/locals().get.",
+                "For inspection requests, print a useful fallback message instead of raising if a variable is absent.",
+                "For the native MNIST example, batch state is exposed through last_batch_summary and batch_loss_trace.",
+            ],
+        }
 
 
 def run_native_tui(
@@ -332,7 +400,7 @@ def _native_curses_main(stdscr: Any, session: NativeProcessSession, log: TuiLog,
     stdscr.nodelay(True)
     stdscr.keypad(True)
     input_text = ""
-    log.append("Native CPython TUI. Commands: /pause /resume /exec <code> /btw <question> /quit.", kind="system")
+    session.log_line("Native CPython TUI. Commands: /pause /resume /exec <code> /btw <question> /quit.", kind="system")
 
     while True:
         _render_native(stdscr, session, log, input_text)
@@ -374,28 +442,28 @@ def _handle_native_input(text: str, session: NativeProcessSession, log: TuiLog) 
         session.resume()
         return False
     if normalized in {"/help", "help", "帮助"}:
-        log.append("Use /exec <python code> for direct CPython-frame execution.", kind="system")
-        log.append("Natural-language text pauses, asks Codex for Python code, queues it, and waits for /resume.", kind="system")
+        session.log_line("Use /exec <python code> for direct CPython-frame execution.", kind="system")
+        session.log_line("Natural-language text pauses, asks Codex for Python code, queues it, and waits for /resume.", kind="system")
         return False
     if normalized == "/btw" or normalized.startswith("/btw "):
         question = text[4:].strip()
         if not question:
-            log.append("Usage: /btw <side question>", kind="system")
+            session.log_line("Usage: /btw <side question>", kind="system")
             return False
-        log.append(question, kind="btw")
+        session.log_line(question, kind="btw", event="btw_input")
         session.submit_btw(question, [line.text for line in log.render_lines(width=120, max_lines=80)])
         return False
     if normalized == "/exec" or normalized.startswith("/exec "):
         code = text[6:].strip()
         if not code:
-            log.append("Usage: /exec <python code>", kind="system")
+            session.log_line("Usage: /exec <python code>", kind="system")
             return False
         session.pause()
         session.queue_code(code, source="operator /exec")
-        log.append("direct code queued; still paused until /resume", kind="agent")
+        session.log_line("direct code queued; still paused until /resume", kind="agent")
         return False
 
-    log.append(text, kind="user")
+    session.log_line(text, kind="user", event="user_input")
     session.submit_instruction(text, [line.text for line in log.render_lines(width=120, max_lines=80)])
     return False
 
@@ -446,3 +514,113 @@ def _event_summary(event: FrameEvent) -> dict[str, Any]:
         "function": event.function,
         "lineno": event.lineno,
     }
+
+
+def _source_windows(script_path: Path, events: list[FrameEvent], *, radius: int = 3) -> list[dict[str, Any]]:
+    try:
+        lines = script_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    windows: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for event in reversed(events):
+        if Path(event.filename).resolve() != script_path.resolve():
+            continue
+        key = (event.function, event.lineno)
+        if key in seen:
+            continue
+        seen.add(key)
+        start = max(1, event.lineno - radius)
+        end = min(len(lines), event.lineno + radius)
+        windows.append(
+            {
+                "function": event.function,
+                "current_lineno": event.lineno,
+                "lines": [
+                    {
+                        "lineno": lineno,
+                        "source": lines[lineno - 1],
+                    }
+                    for lineno in range(start, end + 1)
+                ],
+            }
+        )
+        if len(windows) >= 8:
+            break
+    return list(reversed(windows))
+
+
+def _script_symbols(script_path: Path) -> dict[str, list[str]]:
+    try:
+        tree = ast.parse(script_path.read_text(encoding="utf-8"), filename=str(script_path))
+    except (OSError, SyntaxError):
+        return {"assigned": [], "functions": [], "classes": [], "imports": []}
+
+    assigned: set[str] = set()
+    functions: set[str] = set()
+    classes: set[str] = set()
+    imports: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.add(node.name)
+            assigned.add(node.name)
+            continue
+        if isinstance(node, ast.ClassDef):
+            classes.add(node.name)
+            assigned.add(node.name)
+            continue
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.asname or alias.name.split(".")[0])
+            continue
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imports.add(alias.asname or alias.name)
+            continue
+        for target in _top_level_targets(node):
+            assigned.add(target)
+    return {
+        "assigned": sorted(assigned),
+        "functions": sorted(functions),
+        "classes": sorted(classes),
+        "imports": sorted(imports),
+    }
+
+
+def _top_level_targets(node: ast.AST) -> list[str]:
+    targets: list[ast.AST] = []
+    if isinstance(node, ast.Assign):
+        targets.extend(node.targets)
+    elif isinstance(node, ast.AnnAssign):
+        targets.append(node.target)
+    elif isinstance(node, ast.AugAssign):
+        targets.append(node.target)
+    elif isinstance(node, (ast.For, ast.AsyncFor)):
+        targets.append(node.target)
+        for child in node.body:
+            targets.extend(_assignment_targets_in_statement(child))
+    elif isinstance(node, ast.With):
+        for item in node.items:
+            if item.optional_vars is not None:
+                targets.append(item.optional_vars)
+    return [name for target in targets for name in _target_names(target)]
+
+
+def _assignment_targets_in_statement(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, ast.Assign):
+        return list(node.targets)
+    if isinstance(node, ast.AnnAssign):
+        return [node.target]
+    if isinstance(node, ast.AugAssign):
+        return [node.target]
+    if isinstance(node, (ast.For, ast.AsyncFor)):
+        return [node.target]
+    return []
+
+
+def _target_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for element in target.elts for name in _target_names(element)]
+    return []

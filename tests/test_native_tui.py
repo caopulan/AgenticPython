@@ -1,13 +1,19 @@
+import json
 from pathlib import Path
 
 import pytest
 
+from agenticpython.native.protocol import FrameEvent
 from agenticpython.native.tui import (
+    _script_symbols,
+    _source_windows,
     build_native_env,
     make_native_run_paths,
+    NativeProcessSession,
     resolve_native_python,
     write_exec_command,
 )
+from agenticpython.tui import TuiLog
 
 
 def test_make_native_run_paths_uses_out_dir(tmp_path):
@@ -15,6 +21,7 @@ def test_make_native_run_paths_uses_out_dir(tmp_path):
 
     assert paths.events_path == tmp_path / "run" / "frame_events.jsonl"
     assert paths.commands_path == tmp_path / "run" / "commands.jsonl"
+    assert paths.journal_path == tmp_path / "run" / "journal.jsonl"
     assert paths.pause_path == tmp_path / "run" / "PAUSED"
     assert paths.command_dir == tmp_path / "run" / "commands"
 
@@ -59,3 +66,59 @@ def test_resolve_native_python_uses_requested_path(tmp_path):
 def test_resolve_native_python_errors_when_missing(tmp_path):
     with pytest.raises(RuntimeError, match="Patched CPython runtime is missing"):
         resolve_native_python(tmp_path, None)
+
+
+def test_script_symbols_include_native_mnist_training_state():
+    symbols = _script_symbols(Path("examples/native_cpu_mnist.py"))
+
+    assert "num_epochs" in symbols["assigned"]
+    assert "batch_index" in symbols["assigned"]
+    assert "total_batches" in symbols["assigned"]
+    assert "loss_value" in symbols["assigned"]
+    assert "summarize_current_grads" in symbols["functions"]
+
+
+def test_source_windows_include_recent_frame_source():
+    script_path = Path("examples/native_cpu_mnist.py").resolve()
+    loop_lineno = next(
+        index
+        for index, line in enumerate(script_path.read_text(encoding="utf-8").splitlines(), start=1)
+        if "for epoch, batch_index, total_batches" in line
+    )
+    windows = _source_windows(
+        script_path,
+        [
+            FrameEvent(
+                event="line",
+                run_id="run",
+                process_id=1,
+                frame_id="frame",
+                filename=str(script_path),
+                function="<module>",
+                lineno=loop_lineno,
+            )
+        ],
+    )
+
+    flattened = "\n".join(line["source"] for window in windows for line in window["lines"])
+    assert "for epoch, batch_index, total_batches" in flattened
+    assert "loss_value, batch_examples" in flattened
+
+
+def test_native_session_log_line_writes_journal(tmp_path):
+    session = NativeProcessSession(
+        script_path=Path("examples/native_cpu_mnist.py"),
+        out_dir=tmp_path / "run",
+        native_python=tmp_path / "python",
+        repo_root=Path.cwd(),
+        log=TuiLog(),
+    )
+
+    session.log_line("hello", kind="system", event="test_event")
+
+    records = [
+        json.loads(line)
+        for line in session.paths.journal_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[-1]["event"] == "test_event"
+    assert records[-1]["text"] == "hello"
