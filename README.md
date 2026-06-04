@@ -26,6 +26,7 @@ Codex SDK uses local Codex auth. If auth is missing, run `codex login` first.
 agentpython llm-smoke
 agentpython run examples/error_rollback.py --out-dir .agentpython-runs/error
 agentpython run examples/training_loop.py --triggers examples/training_trigger.json --out-dir .agentpython-runs/training
+agentpython tui examples/training_loop.py --out-dir .agentpython-runs/tui-demo
 ```
 
 Each run writes:
@@ -39,3 +40,32 @@ Each run writes:
 v1 supports module-level instructions and stepwise top-level `for` loops. It
 rejects unsupported editable constructs instead of silently pretending to be a
 complete Python VM.
+
+## Interactive TUI
+
+The TUI keeps program logs in the upper pane and an input prompt at the bottom.
+
+```bash
+agentpython tui examples/training_loop.py --out-dir .agentpython-runs/tui-demo
+```
+
+Commands:
+
+- `/pause` pauses automatic execution.
+- `/resume` or `/start` resumes.
+- `/quit` exits and writes artifacts.
+- Any other text is sent to Codex as an instruction. The runtime applies the
+  returned patch and stays paused until `/resume`.
+
+For a real CPU MNIST training script, install the optional dependencies and run:
+
+```bash
+.venv/bin/python -m pip install -e '.[mnist]'
+agentpython tui examples/cpu_mnist.py --out-dir .agentpython-runs/mnist
+```
+
+Example live instruction:
+
+```text
+下个 step 开始把 optimizer 的 lr 调成 0.01，并且在当前 instruction 后额外 evaluate 一次，把结果 append 到 evals。
+```

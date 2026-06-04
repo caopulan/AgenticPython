@@ -10,6 +10,7 @@ from .actions import AgentAction
 from .codex_client import CodexSdkDecisionClient
 from .runtime import AgenticRunner
 from .triggers import TriggerRule
+from .tui import run_tui
 
 
 def main() -> None:
@@ -25,11 +26,20 @@ def main() -> None:
     smoke_parser = subparsers.add_parser("llm-smoke", help="Verify Codex SDK local-auth action output")
     smoke_parser.add_argument("--model")
 
+    tui_parser = subparsers.add_parser("tui", help="Run a script in the interactive terminal UI")
+    tui_parser.add_argument("script")
+    tui_parser.add_argument("--triggers")
+    tui_parser.add_argument("--out-dir")
+    tui_parser.add_argument("--model")
+    tui_parser.add_argument("--step-delay", type=float, default=0.05)
+
     args = parser.parse_args()
     if args.command == "run":
         _run(args)
     elif args.command == "llm-smoke":
         _llm_smoke(args)
+    elif args.command == "tui":
+        _tui(args)
 
 
 def _run(args: argparse.Namespace) -> None:
@@ -66,6 +76,17 @@ def _llm_smoke(args: argparse.Namespace) -> None:
     finally:
         client.close()
     print(json.dumps(_action_to_json(action), indent=2))
+
+
+def _tui(args: argparse.Namespace) -> None:
+    script_path = Path(args.script)
+    run_tui(
+        script_path=script_path,
+        triggers=_load_triggers(args.triggers),
+        out_dir=Path(args.out_dir) if args.out_dir else _default_out_dir(script_path),
+        model=args.model,
+        step_delay=args.step_delay,
+    )
 
 
 def _load_triggers(trigger_path: str | None) -> list[TriggerRule]:

@@ -44,6 +44,8 @@ class AgenticRunner:
         decision_client: DecisionClient,
         triggers: list[TriggerRule] | None = None,
         out_dir: str | Path | None = None,
+        echo_stdout: bool = True,
+        event_sink: Any | None = None,
     ) -> None:
         self.tape = tape
         self.decision_client = decision_client
@@ -54,6 +56,8 @@ class AgenticRunner:
         self.recent_events: deque[dict[str, Any]] = deque(maxlen=50)
         self.stopped = False
         self._current_error: str | None = None
+        self.echo_stdout = echo_stdout
+        self.event_sink = event_sink
 
     @classmethod
     def from_path(
@@ -62,6 +66,8 @@ class AgenticRunner:
         decision_client: DecisionClient,
         triggers: list[TriggerRule] | None = None,
         out_dir: str | Path | None = None,
+        echo_stdout: bool = True,
+        event_sink: Any | None = None,
     ) -> "AgenticRunner":
         path = Path(script_path)
         return cls(
@@ -69,44 +75,56 @@ class AgenticRunner:
             decision_client=decision_client,
             triggers=triggers,
             out_dir=out_dir,
+            echo_stdout=echo_stdout,
+            event_sink=event_sink,
         )
 
     def run(self) -> RunResult:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         while not self.stopped:
-            current = self._current_instruction()
-            if current is None:
+            if not self.step():
                 break
+        self._write_artifacts()
+        return RunResult(namespace=self.namespace, out_dir=self.out_dir, stopped=self.stopped)
 
-            if self._current_error is None and self._handle_human_trigger(current):
-                continue
+    def step(self) -> bool:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        current = self._current_instruction()
+        if current is None:
+            return False
 
-            try:
-                stdout = self._execute_instruction(current)
-            except Exception:
-                self._current_error = traceback.format_exc()
-                self._record(
-                    {
-                        "event": "execute",
-                        "instruction": current.to_dict(),
-                        "status": "error",
-                        "traceback": self._current_error,
-                    }
-                )
-                self._handle_error_trigger(current)
-                continue
+        if self._current_error is None and self._handle_human_trigger(current):
+            return True
 
-            self._current_error = None
+        try:
+            stdout = self._execute_instruction(current)
+        except Exception:
+            self._current_error = traceback.format_exc()
             self._record(
                 {
                     "event": "execute",
                     "instruction": current.to_dict(),
-                    "status": "ok",
-                    "stdout": stdout,
+                    "status": "error",
+                    "traceback": self._current_error,
                 }
             )
-            self._advance_current()
+            self._handle_error_trigger(current)
+            return True
 
+        self._current_error = None
+        self._record(
+            {
+                "event": "execute",
+                "instruction": current.to_dict(),
+                "status": "ok",
+                "stdout": stdout,
+            }
+        )
+        self._advance_current()
+        return True
+
+    def finish(self) -> RunResult:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
         self._write_artifacts()
         return RunResult(namespace=self.namespace, out_dir=self.out_dir, stopped=self.stopped)
 
@@ -168,7 +186,7 @@ class AgenticRunner:
                 self.namespace,
             )
         stdout = stream.getvalue()
-        if stdout:
+        if stdout and self.echo_stdout:
             sys.stdout.write(stdout)
         return stdout
 
@@ -289,6 +307,8 @@ class AgenticRunner:
 
     def _record(self, event: dict[str, Any]) -> None:
         self.recent_events.append(event)
+        if self.event_sink is not None:
+            self.event_sink(event)
         with (self.out_dir / "journal.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=True, default=repr) + "\n")
 

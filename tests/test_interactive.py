@@ -1,0 +1,86 @@
+from agenticpython.actions import ScriptedActionClient
+from agenticpython.interactive import InteractiveSession
+from agenticpython.runtime import AgenticRunner
+
+
+def test_user_instruction_pauses_applies_patch_and_waits_for_resume(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("x = 1\nx = x + 1\nprint(x)\n", encoding="utf-8")
+    client = ScriptedActionClient(
+        {
+            "human": {
+                "operations": [
+                    {"op": "insert_before", "target": "__current__", "code": "x = 10"}
+                ],
+                "resume": True,
+            }
+        }
+    )
+    runner = AgenticRunner.from_path(script, decision_client=client, out_dir=tmp_path / "run")
+    session = InteractiveSession(runner)
+
+    session.tick()
+    session.submit_instruction("change x before the next instruction")
+    session.tick()
+
+    assert session.paused is True
+    assert runner.namespace["x"] == 1
+    assert client.calls[0]["user_instruction"] == "change x before the next instruction"
+
+    session.resume()
+    while not session.finished:
+        session.tick()
+
+    assert runner.namespace["x"] == 11
+
+
+def test_pause_and_resume_do_not_call_decision_client(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("x = 1\nx = x + 1\n", encoding="utf-8")
+    client = ScriptedActionClient({})
+    runner = AgenticRunner.from_path(script, decision_client=client, out_dir=tmp_path / "run")
+    session = InteractiveSession(runner)
+
+    session.pause()
+    session.tick()
+    assert runner.namespace.get("x") is None
+
+    session.resume()
+    while not session.finished:
+        session.tick()
+
+    assert runner.namespace["x"] == 2
+    assert client.calls == []
+
+
+def test_runner_can_send_stdout_to_event_sink_without_echoing(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("print('hello tui')\n", encoding="utf-8")
+    events = []
+    runner = AgenticRunner.from_path(
+        script,
+        decision_client=ScriptedActionClient({}),
+        out_dir=tmp_path / "run",
+        echo_stdout=False,
+        event_sink=events.append,
+    )
+
+    runner.run()
+
+    assert any(event.get("stdout") == "hello tui\n" for event in events)
+
+
+def test_stop_before_first_tick_still_writes_artifacts(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    runner = AgenticRunner.from_path(
+        script,
+        decision_client=ScriptedActionClient({}),
+        out_dir=tmp_path / "run",
+    )
+    session = InteractiveSession(runner)
+
+    session.stop()
+
+    assert (tmp_path / "run" / "final_tape.json").exists()
+    assert (tmp_path / "run" / "replay.py").exists()
