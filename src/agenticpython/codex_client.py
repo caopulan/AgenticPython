@@ -50,6 +50,21 @@ class CodexSdkDecisionClient:
         with self._btw_lock:
             return self._btw_thread.run(prompt).final_response.strip()
 
+    def decide_native_code(self, context: dict[str, Any]) -> str:
+        prompt = _build_native_code_prompt(context)
+        with self._decision_lock:
+            response = self._thread.run(prompt).final_response
+        try:
+            return parse_native_code_response(response)
+        except ActionValidationError:
+            repair_prompt = (
+                "Your previous response was not valid AgenticPython native-code JSON. "
+                "Return only a JSON object with a non-empty string field named code.\n\n"
+                f"Previous response:\n{response}"
+            )
+            with self._decision_lock:
+                return parse_native_code_response(self._thread.run(repair_prompt).final_response)
+
 
 def _build_prompt(context: dict[str, Any]) -> str:
     return (
@@ -79,3 +94,36 @@ def _build_btw_prompt(context: dict[str, Any]) -> str:
         "BTW context JSON:\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2, default=repr)}"
     )
+
+
+def _build_native_code_prompt(context: dict[str, Any]) -> str:
+    return (
+        "You are AgenticPython's CPython-frame intervention agent. Return only JSON, no markdown.\n"
+        "Allowed schema:\n"
+        '{ "code": "python code to execute at the next CPython trace safepoint" }\n'
+        "The code will run with the current frame globals and locals. Prefer changing existing "
+        "global runtime objects such as optimizer.param_groups, lr, eval_every_epochs, and logging. "
+        "Do not import unavailable packages. Do not ask questions. Include a short print() so the "
+        "operator can see what changed.\n\n"
+        "Native runtime context JSON:\n"
+        f"{json.dumps(context, ensure_ascii=False, indent=2, default=repr)}"
+    )
+
+
+def parse_native_code_response(response_text: str) -> str:
+    decoder = json.JSONDecoder()
+    parsed: Any | None = None
+    for index, character in enumerate(response_text):
+        if character != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(response_text[index:])
+            break
+        except json.JSONDecodeError:
+            continue
+    if not isinstance(parsed, dict):
+        raise ActionValidationError("Native code response must be a JSON object")
+    code = parsed.get("code")
+    if not isinstance(code, str) or not code.strip():
+        raise ActionValidationError("Native code response requires non-empty code")
+    return code

@@ -14,6 +14,7 @@ from .native.protocol import (
     decode_event,
     encode_command,
 )
+from .native.tui import run_native_tui
 from .runtime import AgenticRunner
 from .triggers import TriggerRule
 from .tui import run_tui
@@ -42,6 +43,14 @@ def main() -> None:
     tui_parser.add_argument("--step-delay", type=float, default=0.05)
     tui_parser.add_argument("--log-level", choices=["INFO", "DEBUG"], default="INFO")
 
+    native_tui_parser = subparsers.add_parser("native-tui", help="Run a script under the patched CPython frame backend")
+    native_tui_parser.add_argument("script")
+    native_tui_parser.add_argument("--out-dir")
+    native_tui_parser.add_argument("--python")
+    native_tui_parser.add_argument("--model")
+    native_tui_parser.add_argument("--step-delay", type=float, default=0.05)
+    native_tui_parser.add_argument("--log-level", choices=["INFO", "DEBUG"], default="INFO")
+
     args = parser.parse_args()
     if args.command == "run":
         _run(args)
@@ -51,6 +60,8 @@ def main() -> None:
         print(json.dumps(_native_protocol_smoke(), indent=2))
     elif args.command == "tui":
         _tui(args)
+    elif args.command == "native-tui":
+        _native_tui(args)
 
 
 def _run(args: argparse.Namespace) -> None:
@@ -95,6 +106,18 @@ def _tui(args: argparse.Namespace) -> None:
         script_path=script_path,
         triggers=_load_triggers(args.triggers),
         out_dir=Path(args.out_dir) if args.out_dir else _default_out_dir(script_path),
+        model=args.model,
+        step_delay=args.step_delay,
+        log_level=args.log_level,
+    )
+
+
+def _native_tui(args: argparse.Namespace) -> None:
+    script_path = Path(args.script)
+    run_native_tui(
+        script_path=script_path,
+        out_dir=Path(args.out_dir) if args.out_dir else _default_out_dir(script_path),
+        native_python=Path(args.python) if args.python else None,
         model=args.model,
         step_delay=args.step_delay,
         log_level=args.log_level,

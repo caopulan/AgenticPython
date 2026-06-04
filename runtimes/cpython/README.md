@@ -40,5 +40,30 @@ result=8
 Expected events include `call`, `line`, and `return` rows for
 `examples/native_package_demo/pkgdemo/inner.py` function `compute`.
 
-The first probe writes JSONL frame events when `PYTHON_AGENTIC=1` is set. It
-does not call Codex or block on the controller from inside CPython.
+The patched runtime is enabled with `PYTHON_AGENTIC=1`.
+
+Environment variables:
+
+- `PYTHON_AGENTIC_RUN_ID` identifies the run in emitted events.
+- `PYTHON_AGENTIC_EVENTS` is the JSONL frame-event output path.
+- `PYTHON_AGENTIC_COMMANDS` is an append-only command file. The current command
+  format is `exec_file\t/path/to/code.py`.
+- `PYTHON_AGENTIC_PAUSE_FILE` pauses the interpreter at matching trace
+  safepoints while the file exists.
+- `PYTHON_AGENTIC_FILTER` limits tracing, command polling, and pause checks to
+  frames whose filename contains the filter string. The native TUI sets this to
+  the target script path so imported libraries such as PyTorch do not produce a
+  frame event for every internal line.
+
+Run the native MNIST TUI from the repository root:
+
+```bash
+.venv/bin/python -m pip install -e '.[mnist,codex]'
+.venv/bin/agentpython native-tui examples/native_cpu_mnist.py --out-dir .agentpython-runs/native-mnist
+```
+
+Inside the TUI, `/exec <python code>` appends an `exec_file` command. CPython
+executes that file in the current frame globals and locals at the next matching
+trace safepoint. Natural-language input pauses the process, asks Codex SDK for
+native Python code, queues it through the same command file, and waits for
+`/resume`.

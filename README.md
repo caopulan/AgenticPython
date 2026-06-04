@@ -104,9 +104,11 @@ Example non-interrupting side chat:
 
 ## Native CPython Frame Backend
 
-The repository also contains the first CPython-level backend foundation. It
-keeps CPython source in the ignored `.agentpython-build/` cache and stores only
-reviewable patch files in git.
+The repository also contains the CPython-level backend. This is the path to use
+when you want the program to run inside a patched CPython process instead of the
+pure-Python editable tape runtime.
+
+Build the patched runtime once:
 
 ```bash
 .venv/bin/python -m tools.cpython_backend.fetch_cpython
@@ -116,6 +118,51 @@ cd .agentpython-build/cpython
 make -j4
 make install
 ```
+
+Then run the native MNIST example:
+
+```bash
+cd /Users/caopu/workspace/AgenticPython
+.venv/bin/python -m pip install -e '.[mnist,codex]'
+.venv/bin/agentpython native-tui examples/native_cpu_mnist.py --out-dir .agentpython-runs/native-mnist
+```
+
+`native-tui` launches `.agentpython-build/cpython/python.exe` by default when it
+exists. The child process receives `PYTHON_AGENTIC=1`, writes frame events to
+the run directory, and polls an append-only command file at CPython trace
+safepoints. The controller sets `PYTHON_AGENTIC_FILTER` to the script path so
+PyTorch internals are not traced line by line.
+
+Useful native TUI commands:
+
+- `/pause` asks CPython to stop at the next matching frame safepoint.
+- `/resume` resumes the process.
+- `/exec <python code>` queues Python code to execute in the current CPython
+  frame context, then stays paused until `/resume`.
+- `/btw <message>` asks Codex a side question without pausing.
+- Any other text pauses, asks Codex for Python code, queues that code, and
+  waits for `/resume`.
+- `/quit` exits the process.
+
+Example direct intervention:
+
+```text
+/pause
+/exec optimizer.param_groups[0]["lr"] = 0.01; lr = 0.01; print("lr changed to", optimizer.param_groups[0]["lr"], flush=True)
+/resume
+```
+
+Example Codex-driven intervention:
+
+```text
+把学习率改成 0.01，并打印当前 lr
+```
+
+`examples/native_cpu_mnist.py` uses a small torch-only MNIST IDX loader rather
+than `torchvision`, because the local patched CPython build does not include the
+optional `_lzma` extension that `torchvision` imports during startup. The
+training itself still uses full MNIST, `batch_size = 64`, a VGG16-style CPU
+model, three epochs, and full test-set evaluation every epoch.
 
 Smoke test:
 
@@ -127,6 +174,6 @@ PYTHON_AGENTIC_EVENTS=/tmp/agentic-events.jsonl \
 rg 'pkgdemo/inner.py.*compute' /tmp/agentic-events.jsonl
 ```
 
-The current native probe emits JSONL `call`, `line`, `return`, and `exception`
-frame events for Python code, including imported package internals. It does not
-call Codex from inside CPython.
+The native backend emits JSONL `call`, `line`, `return`, and `exception` frame
+events for Python code. It also supports a controller command channel that
+executes queued Python files in the current frame context.
