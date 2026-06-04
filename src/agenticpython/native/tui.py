@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import site
 import subprocess
 import threading
@@ -149,7 +150,10 @@ class NativeProcessSession:
         self._journal_lock = threading.RLock()
 
     def start(self) -> None:
+        if self.paths.command_dir.exists():
+            shutil.rmtree(self.paths.command_dir)
         self.paths.command_dir.mkdir(parents=True, exist_ok=True)
+        self._command_index = 0
         self.paths.commands_path.write_text("", encoding="utf-8")
         self.paths.events_path.write_text("", encoding="utf-8")
         self.paths.journal_path.write_text("", encoding="utf-8")
@@ -440,6 +444,7 @@ class NativeProcessSession:
             "recent_source_windows": _source_windows(self.script_path, recent_events),
             "runtime_notes": [
                 "Injected code runs at the next CPython trace safepoint with the current frame globals and locals.",
+                "Functions created by injected code run later with globals, so bind local state with default arguments or store it in globals/runtime objects.",
                 "Use only names visible in script_symbols/source windows, or guard lookups with globals().get/locals().get.",
                 "For inspection requests, print a useful fallback message instead of raising if a variable is absent.",
                 "For the native MNIST example, batch state is exposed through last_batch_summary and batch_loss_trace.",
@@ -646,10 +651,13 @@ def _parse_natural_language_control(text: str) -> NaturalLanguageControlRequest 
         or "optimizer" in normalized
         or "optim" in normalized
         or "优化器" in normalized
+        or "梯度更新" in normalized
+        or "更新参数" in normalized
     )
 
     wants_break_off = any(keyword in normalized for keyword in ["不停了", "别停", "不要停", "不用停", "关闭break"])
     wants_stop = any(keyword in normalized for keyword in ["停", "断", "break", "stop"])
+    wants_stop = wants_stop or ((mentions_optimizer or mentions_python_all) and any(keyword in normalized for keyword in ["听一下", "听下"]))
     wants_step = any(keyword in normalized for keyword in ["step", "单步", "一步", "踩进去"])
     wants_continue = any(keyword in normalized for keyword in ["继续", "resume", "continue"])
 

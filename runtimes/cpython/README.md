@@ -104,6 +104,7 @@ The same controls can be requested in Chinese natural language:
 
 ```text
 我要在 optim 里停
+在 optim 用梯度更新参数的时候停一下
 我想在 optimizer 每一行停住
 在任意 python 代码每一行都停
 optim 里不要停了

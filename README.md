@@ -191,6 +191,7 @@ The same optimizer stop can be requested naturally:
 
 ```text
 我要在 optim 里停
+在 optim 用梯度更新参数的时候停一下
 ```
 
 For line-level stops inside the Python part of the optimizer:

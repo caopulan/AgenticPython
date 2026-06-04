@@ -28,6 +28,13 @@ def test_native_code_prompt_requires_flushed_prints():
     assert "print(..., flush=True)" in prompt
 
 
+def test_native_code_prompt_warns_about_exec_local_function_state():
+    prompt = _build_native_code_prompt({"user_instruction": "hook optimizer.step"})
+
+    assert "functions created by injected code" in prompt
+    assert "default arguments" in prompt
+
+
 @pytest.mark.skipif(
     os.environ.get("AGENTICPYTHON_RUN_CODEX_SMOKE") != "1",
     reason="Codex SDK smoke test is opt-in because it calls local Codex auth.",

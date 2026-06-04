@@ -85,6 +85,15 @@ def test_parse_natural_language_control_stops_in_optimizer_calls():
     assert request.resume is True
 
 
+def test_parse_natural_language_control_handles_logged_optimizer_stop_phrase():
+    request = _parse_natural_language_control("在optim用梯度更新参数的时候听一下")
+
+    assert request is not None
+    assert request.trace_package == "torch.optim"
+    assert request.break_mode == "call"
+    assert request.resume is True
+
+
 def test_parse_natural_language_control_stops_on_optimizer_lines():
     request = _parse_natural_language_control("我想在 optimizer 每一行停住")
 
@@ -136,6 +145,30 @@ def test_handle_native_input_applies_natural_language_optimizer_break(tmp_path):
     assert "set_step_mode\tnone" in command_lines
     assert "resume" in command_lines
     assert any(entry.text == "natural-language runtime control applied" for entry in log.snapshot())
+
+
+def test_native_session_start_clears_stale_command_files(tmp_path):
+    native_python = tmp_path / "python"
+    native_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    native_python.chmod(0o755)
+    script_path = tmp_path / "script.py"
+    script_path.write_text("print('unused')\n", encoding="utf-8")
+    log = TuiLog()
+    session = NativeProcessSession(
+        script_path=script_path,
+        out_dir=tmp_path / "run",
+        native_python=native_python,
+        repo_root=Path.cwd(),
+        log=log,
+    )
+    session.paths.command_dir.mkdir(parents=True)
+    stale_command = session.paths.command_dir / "command-9999.py"
+    stale_command.write_text("print('stale')\n", encoding="utf-8")
+
+    session.start()
+    session.close()
+
+    assert not stale_command.exists()
 
 
 def test_resolve_native_python_uses_requested_path(tmp_path):
