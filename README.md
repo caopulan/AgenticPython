@@ -58,6 +58,10 @@ Commands:
   returned patch and stays paused until `/resume`.
 - Default TUI logging is `INFO`, which shows normal program output. Use
   `--log-level DEBUG` to also show each executed tape instruction.
+- The TUI execution loop runs in a background thread, so the input prompt stays
+  usable while the current instruction is running. Python and PyTorch execution
+  is still cooperative: pause or instruction requests take effect after the
+  current instruction, such as the current minibatch, finishes.
 
 For a real CPU MNIST training script, install the optional dependencies and run:
 
@@ -68,8 +72,9 @@ agentpython tui examples/cpu_mnist.py --out-dir .agentpython-runs/mnist
 
 `examples/cpu_mnist.py` trains a MNIST-adapted VGG16 on the full MNIST training
 split with `batch_size = 64` for `num_epochs = 3` and evaluates the full test
-split every `eval_every_epochs = 1`, reporting evaluation accuracy after each
-epoch.
+split every `eval_every_epochs = 1`. The top-level tape advances one minibatch
+at a time, reports periodic batch progress, and reports evaluation accuracy
+after each epoch.
 
 Example live instruction:
 

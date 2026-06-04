@@ -15,6 +15,11 @@ def test_cpu_mnist_is_epoch_based_and_reports_evaluation_accuracy():
     assert "models.vgg16" in source
     assert "nn.Conv2d(1, 64" in source
     assert "nn.Linear(512, 10)" in source
+    assert "log_every_batches =" in source
+    assert "def training_batches():" in source
+    assert "def train_one_minibatch(" in source
+    assert "for epoch, batch_index, total_batches, images, labels in training_batches():" in source
+    assert "train_one_epoch" not in source
     assert "total_steps =" not in source
     assert "Subset" not in source
     assert "DataLoader(train_dataset" in source

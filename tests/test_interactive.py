@@ -1,5 +1,7 @@
+import time
+
 from agenticpython.actions import ScriptedActionClient
-from agenticpython.interactive import InteractiveSession
+from agenticpython.interactive import BackgroundTicker, InteractiveSession
 from agenticpython.runtime import AgenticRunner
 from agenticpython.tui import TuiLog
 
@@ -52,6 +54,95 @@ def test_pause_and_resume_do_not_call_decision_client(tmp_path):
 
     assert runner.namespace["x"] == 2
     assert client.calls == []
+
+
+def test_background_ticker_keeps_control_thread_responsive_during_long_instruction(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("import time\ntime.sleep(0.2)\nx = 1\n", encoding="utf-8")
+    runner = AgenticRunner.from_path(
+        script,
+        decision_client=ScriptedActionClient({}),
+        out_dir=tmp_path / "run",
+    )
+    session = InteractiveSession(runner)
+    ticker = BackgroundTicker(session, delay=0.001)
+
+    ticker.start()
+    time.sleep(0.05)
+    started_at = time.perf_counter()
+    session.pause()
+    elapsed = time.perf_counter() - started_at
+    ticker.stop()
+
+    assert elapsed < 0.05
+    assert session.paused is True
+    assert "x" not in runner.namespace
+
+
+def test_instruction_submitted_during_running_step_applies_to_next_instruction(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("import time\ntime.sleep(0.1)\nx = 1\n", encoding="utf-8")
+    client = ScriptedActionClient(
+        {
+            "human": {
+                "operations": [
+                    {"op": "replace", "target": "__current__", "code": "x = 10"}
+                ],
+                "resume": True,
+            }
+        }
+    )
+    runner = AgenticRunner.from_path(script, decision_client=client, out_dir=tmp_path / "run")
+    session = InteractiveSession(runner)
+    ticker = BackgroundTicker(session, delay=0.001)
+
+    ticker.start()
+    time.sleep(0.03)
+    session.submit_instruction("replace the next instruction with x = 10")
+    time.sleep(0.2)
+
+    assert session.paused is True
+    assert runner.namespace.get("x") is None
+    assert client.calls[0]["current_instruction"]["source"] == "x = 1"
+
+    session.resume()
+    deadline = time.monotonic() + 1
+    while not session.finished and time.monotonic() < deadline:
+        time.sleep(0.01)
+    ticker.stop()
+
+    assert runner.namespace["x"] == 10
+
+
+def test_queued_instruction_is_applied_by_background_ticker(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    client = ScriptedActionClient(
+        {
+            "human": {
+                "operations": [
+                    {"op": "replace", "target": "__current__", "code": "x = 10"}
+                ],
+                "resume": True,
+            }
+        }
+    )
+    runner = AgenticRunner.from_path(script, decision_client=client, out_dir=tmp_path / "run")
+    session = InteractiveSession(runner)
+
+    session.queue_instruction("replace x with 10")
+
+    assert client.calls == []
+
+    ticker = BackgroundTicker(session, delay=0.001)
+    ticker.start()
+    deadline = time.monotonic() + 1
+    while not client.calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    ticker.stop()
+
+    assert client.calls[0]["current_instruction"]["source"] == "x = 1"
+    assert session.paused is True
 
 
 def test_runner_can_send_stdout_to_event_sink_without_echoing(tmp_path):
