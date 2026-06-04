@@ -44,8 +44,20 @@ class NaturalLanguageControlRequest:
     trace_all: bool = False
     trace_script: bool = False
     break_mode: str | None = None
+    break_once: bool = False
     step_mode: str | None = None
     resume: bool = False
+
+
+def run_logging_enabled(environ: dict[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    disabled = env.get("AGENTICPYTHON_DISABLE_RUN_LOG", "").strip().lower()
+    if disabled in {"1", "true", "yes", "on"}:
+        return False
+    value = env.get("AGENTICPYTHON_RUN_LOG")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def make_native_run_paths(out_dir: Path) -> NativeRunPaths:
@@ -125,6 +137,7 @@ class NativeProcessSession:
         repo_root: Path,
         log: TuiLog,
         model: str | None = None,
+        logging_enabled: bool | None = None,
     ) -> None:
         self.script_path = script_path.resolve()
         self.out_dir = out_dir
@@ -132,6 +145,7 @@ class NativeProcessSession:
         self.repo_root = repo_root
         self.log = log
         self.model = model
+        self.logging_enabled = run_logging_enabled() if logging_enabled is None else logging_enabled
         self.paths = make_native_run_paths(out_dir)
         self.run_id = f"native-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         self.paused = False
@@ -156,7 +170,10 @@ class NativeProcessSession:
         self._command_index = 0
         self.paths.commands_path.write_text("", encoding="utf-8")
         self.paths.events_path.write_text("", encoding="utf-8")
-        self.paths.journal_path.write_text("", encoding="utf-8")
+        if self.logging_enabled:
+            self.paths.journal_path.write_text("", encoding="utf-8")
+        elif self.paths.journal_path.exists():
+            self.paths.journal_path.unlink()
         if self.paths.pause_path.exists():
             self.paths.pause_path.unlink()
         env = build_native_env(
@@ -192,7 +209,10 @@ class NativeProcessSession:
         )
         self.log_line(f"started native CPython pid={self.process.pid} python={self.native_python}", kind="system")
         self.log_line(f"events={self.paths.events_path}", kind="system")
-        self.log_line(f"journal={self.paths.journal_path}", kind="system")
+        if self.logging_enabled:
+            self.log_line(f"journal={self.paths.journal_path}", kind="system")
+        else:
+            self.log_line("journal=disabled by AGENTICPYTHON_RUN_LOG", kind="system")
         self._start_thread(self._read_stdout)
         self._start_thread(self._read_stderr)
         self._start_thread(self._tail_events)
@@ -286,6 +306,17 @@ class NativeProcessSession:
         self._write_journal("break_mode_set", {"mode": mode})
         self.log_line(f"break mode: {mode}", kind="system", event="break_mode_set")
 
+    def set_break_once(self, mode: str) -> None:
+        allowed = {"line", "call", "return", "exception", "all"}
+        if mode not in allowed:
+            self.log_line(f"unknown one-shot break mode: {mode}", kind="error")
+            return
+        with self._state_lock:
+            self._break_mode = f"{mode}:once"
+        write_control_command(self.paths.commands_path, "set_break_once", mode)
+        self._write_journal("break_once_set", {"mode": mode})
+        self.log_line(f"break once: {mode}", kind="system", event="break_once_set")
+
     def step(self, mode: str) -> None:
         allowed = {"into", "over", "out"}
         if mode not in allowed:
@@ -311,6 +342,10 @@ class NativeProcessSession:
             step_mode = self._step_mode
         filters_text = ", ".join(filters) if filters else "all Python frames"
         return f"trace={filters_text}; break={break_mode}; step={step_mode}"
+
+    @property
+    def log_id(self) -> str:
+        return self.run_id if self.logging_enabled else "off"
 
     def submit_instruction(self, instruction: str, visible_log: list[str]) -> None:
         self._write_journal("user_instruction", {"text": instruction})
@@ -422,6 +457,8 @@ class NativeProcessSession:
         self._write_journal(event, {"kind": kind, "label": label, "text": line})
 
     def _write_journal(self, event: str, payload: dict[str, Any]) -> None:
+        if not self.logging_enabled:
+            return
         record = {
             "ts": datetime.now().isoformat(timespec="milliseconds"),
             "event": event,
@@ -562,6 +599,10 @@ def _handle_native_input(text: str, session: NativeProcessSession, log: TuiLog) 
         session.log_line(text, kind="user", event="user_input")
         _apply_natural_language_control(natural_control, session)
         return False
+    if _is_native_status_query(text):
+        session.log_line(text, kind="user", event="user_input")
+        session.log_line(_native_status_summary(session), kind="agent", event="status_query")
+        return False
     if normalized == "/btw" or normalized.startswith("/btw "):
         question = text[4:].strip()
         if not question:
@@ -685,6 +726,7 @@ def _parse_natural_language_control(text: str) -> NaturalLanguageControlRequest 
         trace_package="torch.optim" if mentions_optimizer else None,
         trace_all=mentions_python_all,
         break_mode=break_mode,
+        break_once=break_mode != "line",
         step_mode=step_mode,
         resume=True,
     )
@@ -702,13 +744,51 @@ def _apply_natural_language_control(request: NaturalLanguageControlRequest, sess
             return
         session.add_trace_filter(resolved, source=f"natural language package {request.trace_package}")
     if request.break_mode is not None:
-        session.set_break_mode(request.break_mode)
+        if request.break_once and request.break_mode != "off":
+            session.set_break_once(request.break_mode)
+        else:
+            session.set_break_mode(request.break_mode)
     if request.step_mode is not None:
         session.step(request.step_mode)
         return
     if request.resume:
         session.continue_execution()
     session.log_line("natural-language runtime control applied", kind="agent", event="natural_control_applied")
+
+
+def _is_native_status_query(text: str) -> bool:
+    normalized = text.strip().lower().replace(" ", "")
+    return any(
+        keyword in normalized
+        for keyword in [
+            "到什么阶段",
+            "到哪",
+            "在哪",
+            "卡在哪",
+            "卡住",
+            "现在多少iter",
+            "多少iter",
+            "whereami",
+            "status",
+        ]
+    )
+
+
+def _native_status_summary(session: NativeProcessSession) -> str:
+    recent_events = list(session.recent_events)
+    if recent_events:
+        event = recent_events[-1]
+        location = f"last_event={event.event} {event.function} {Path(event.filename).name}:{event.lineno}"
+    else:
+        location = "last_event=none"
+    return f"{session.trace_status()} | {location} | out={session.out_dir}"
+
+
+def _native_status_text(session: NativeProcessSession) -> str:
+    status = "paused" if session.paused else "running"
+    if session.finished:
+        status = "finished"
+    return f" {status.upper()}  log={session.log_id}  {session.trace_status()}  out={session.out_dir}"
 
 
 def _render_native(stdscr: Any, session: NativeProcessSession, log: TuiLog, input_text: str) -> None:
@@ -720,9 +800,6 @@ def _render_native(stdscr: Any, session: NativeProcessSession, log: TuiLog, inpu
     for row, line in enumerate(visible):
         stdscr.addnstr(row + 2, 1, line.text, max(0, width - 2), _entry_attr(line.kind))
 
-    status = "paused" if session.paused else "running"
-    if session.finished:
-        status = "finished"
     divider = "─" * max(0, width - 1)
     stdscr.attron(_color_pair(9))
     stdscr.addnstr(height - 3, 0, divider, max(0, width - 1))
@@ -730,7 +807,7 @@ def _render_native(stdscr: Any, session: NativeProcessSession, log: TuiLog, inpu
     stdscr.addnstr(
         height - 2,
         0,
-        f" {status.upper()}  {session.trace_status()}  out={session.out_dir}",
+        _native_status_text(session),
         max(0, width - 1),
         _color_pair(2),
     )

@@ -6,7 +6,9 @@ import pytest
 from agenticpython.native.protocol import FrameEvent
 from agenticpython.native.tui import (
     _handle_native_input,
+    _native_status_text,
     _parse_natural_language_control,
+    run_logging_enabled,
     _resolve_package_filter,
     _script_symbols,
     _source_windows,
@@ -82,6 +84,7 @@ def test_parse_natural_language_control_stops_in_optimizer_calls():
     assert request is not None
     assert request.trace_package == "torch.optim"
     assert request.break_mode == "call"
+    assert request.break_once is True
     assert request.resume is True
 
 
@@ -91,6 +94,7 @@ def test_parse_natural_language_control_handles_logged_optimizer_stop_phrase():
     assert request is not None
     assert request.trace_package == "torch.optim"
     assert request.break_mode == "call"
+    assert request.break_once is True
     assert request.resume is True
 
 
@@ -100,6 +104,7 @@ def test_parse_natural_language_control_stops_on_optimizer_lines():
     assert request is not None
     assert request.trace_package == "torch.optim"
     assert request.break_mode == "line"
+    assert request.break_once is False
     assert request.resume is True
 
 
@@ -141,10 +146,74 @@ def test_handle_native_input_applies_natural_language_optimizer_break(tmp_path):
     command_lines = session.paths.commands_path.read_text(encoding="utf-8").splitlines()
     assert should_quit is False
     assert any(line.startswith("add_filter\t") and line.endswith("torch/optim") for line in command_lines)
-    assert "set_break_mode\tcall" in command_lines
+    assert "set_break_once\tcall" in command_lines
     assert "set_step_mode\tnone" in command_lines
     assert "resume" in command_lines
     assert any(entry.text == "natural-language runtime control applied" for entry in log.snapshot())
+
+
+def test_handle_native_input_answers_status_locally(tmp_path):
+    log = TuiLog()
+    session = NativeProcessSession(
+        script_path=Path("examples/native_cpu_mnist.py"),
+        out_dir=tmp_path / "run",
+        native_python=tmp_path / "python",
+        repo_root=Path.cwd(),
+        log=log,
+    )
+    session.paths.out_dir.mkdir(parents=True, exist_ok=True)
+    session.paths.commands_path.write_text("", encoding="utf-8")
+    session.recent_events.append(
+        FrameEvent(
+            event="call",
+            run_id="run",
+            process_id=1,
+            frame_id="frame",
+            filename="/tmp/torch/optim/optimizer.py",
+            function="_use_grad",
+            lineno=60,
+        )
+    )
+
+    should_quit = _handle_native_input("到什么阶段了", session, log)
+
+    assert should_quit is False
+    assert session.paths.commands_path.read_text(encoding="utf-8") == ""
+    assert any("last_event=call _use_grad" in entry.text for entry in log.snapshot())
+
+
+def test_native_status_text_includes_log_id_by_default(tmp_path):
+    session = NativeProcessSession(
+        script_path=Path("examples/native_cpu_mnist.py"),
+        out_dir=tmp_path / "run",
+        native_python=tmp_path / "python",
+        repo_root=Path.cwd(),
+        log=TuiLog(),
+    )
+
+    assert f"log={session.run_id}" in _native_status_text(session)
+
+
+def test_native_status_text_shows_log_off_when_disabled(tmp_path):
+    session = NativeProcessSession(
+        script_path=Path("examples/native_cpu_mnist.py"),
+        out_dir=tmp_path / "run",
+        native_python=tmp_path / "python",
+        repo_root=Path.cwd(),
+        log=TuiLog(),
+        logging_enabled=False,
+    )
+
+    session.log_line("hello", kind="system", event="test_event")
+
+    assert "log=off" in _native_status_text(session)
+    assert not session.paths.journal_path.exists()
+
+
+def test_run_logging_enabled_can_be_disabled_by_environment(monkeypatch):
+    monkeypatch.setenv("AGENTICPYTHON_RUN_LOG", "0")
+
+    assert run_logging_enabled() is False
 
 
 def test_native_session_start_clears_stale_command_files(tmp_path):

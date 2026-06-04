@@ -32,6 +32,7 @@ def test_native_code_prompt_warns_about_exec_local_function_state():
     prompt = _build_native_code_prompt({"user_instruction": "hook optimizer.step"})
 
     assert "functions created by injected code" in prompt
+    assert "helper lambdas" in prompt
     assert "default arguments" in prompt
 
 

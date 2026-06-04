@@ -1,5 +1,5 @@
 diff --git a/Python/pylifecycle.c b/Python/pylifecycle.c
-index f5bea14..898882c 100644
+index f5bea14..3ca6bcb 100644
 --- a/Python/pylifecycle.c
 +++ b/Python/pylifecycle.c
 @@ -2,6 +2,9 @@
@@ -23,7 +23,7 @@ index f5bea14..898882c 100644
  #if defined(__APPLE__)
  #include <mach-o/loader.h>
  #endif
-@@ -69,6 +76,552 @@ static PyStatus init_sys_streams(PyThreadState *tstate);
+@@ -69,6 +76,577 @@ static PyStatus init_sys_streams(PyThreadState *tstate);
  static void wait_for_thread_shutdown(PyThreadState *tstate);
  static void call_ll_exitfuncs(_PyRuntimeState *runtime);
  
@@ -31,6 +31,7 @@ index f5bea14..898882c 100644
 +static long agentic_commands_offset = 0;
 +static int agentic_waiting_for_resume = 0;
 +static int agentic_break_mode = 0;
++static int agentic_break_once = 0;
 +static int agentic_step_mode = 0;
 +static int agentic_step_origin_depth = 0;
 +static int agentic_filters_initialized = 0;
@@ -271,21 +272,36 @@ index f5bea14..898882c 100644
 +    }
 +    if (strcmp(mode, "off") == 0 || strcmp(mode, "none") == 0) {
 +        agentic_break_mode = AGENTIC_BREAK_OFF;
++        agentic_break_once = 0;
 +    }
 +    else if (strcmp(mode, "line") == 0) {
 +        agentic_break_mode = AGENTIC_BREAK_LINE;
++        agentic_break_once = 0;
 +    }
 +    else if (strcmp(mode, "call") == 0) {
 +        agentic_break_mode = AGENTIC_BREAK_CALL;
++        agentic_break_once = 0;
 +    }
 +    else if (strcmp(mode, "return") == 0) {
 +        agentic_break_mode = AGENTIC_BREAK_RETURN;
++        agentic_break_once = 0;
 +    }
 +    else if (strcmp(mode, "exception") == 0) {
 +        agentic_break_mode = AGENTIC_BREAK_EXCEPTION;
++        agentic_break_once = 0;
 +    }
 +    else if (strcmp(mode, "all") == 0) {
 +        agentic_break_mode = AGENTIC_BREAK_ALL;
++        agentic_break_once = 0;
++    }
++}
++
++static void
++agentic_set_break_once(const char *mode)
++{
++    agentic_set_break_mode(mode);
++    if (agentic_break_mode != AGENTIC_BREAK_OFF) {
++        agentic_break_once = 1;
 +    }
 +}
 +
@@ -345,6 +361,9 @@ index f5bea14..898882c 100644
 +    }
 +    else if (strncmp(line, "set_break_mode\t", 15) == 0) {
 +        agentic_set_break_mode(line + 15);
++    }
++    else if (strncmp(line, "set_break_once\t", 15) == 0) {
++        agentic_set_break_once(line + 15);
 +    }
 +    else if (strncmp(line, "set_step_mode\t", 14) == 0) {
 +        agentic_set_step_mode(frame, line + 14);
@@ -554,7 +573,13 @@ index f5bea14..898882c 100644
 +    }
 +
 +    agentic_poll_commands(frame);
-+    if (agentic_break_mode_matches(what) || agentic_step_mode_matches(frame, what)) {
++    int break_matches = agentic_break_mode_matches(what);
++    int step_matches = agentic_step_mode_matches(frame, what);
++    if (break_matches || step_matches) {
++        if (break_matches && agentic_break_once) {
++            agentic_break_mode = AGENTIC_BREAK_OFF;
++            agentic_break_once = 0;
++        }
 +        agentic_waiting_for_resume = 1;
 +    }
 +    agentic_wait_if_paused(frame);
@@ -576,7 +601,7 @@ index f5bea14..898882c 100644
  /* The following places the `_PyRuntime` structure in a location that can be
   * found without any external information. This is meant to ease access to the
   * interpreter state for various runtime debugging tools, but is *not* an
-@@ -1311,6 +1864,7 @@ Py_InitializeFromConfig(const PyConfig *config)
+@@ -1311,6 +1889,7 @@ Py_InitializeFromConfig(const PyConfig *config)
          if (_PyStatus_EXCEPTION(status)) {
              return status;
          }

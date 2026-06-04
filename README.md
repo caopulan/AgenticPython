@@ -144,6 +144,11 @@ Native run artifacts:
 - `commands/*.py` stores the exact Python code injected into the running
   interpreter.
 
+Run journaling is enabled by default. Set `AGENTICPYTHON_RUN_LOG=0` or
+`AGENTICPYTHON_DISABLE_RUN_LOG=1` to disable `journal.jsonl` writes. When
+journaling is enabled, the native TUI status line shows `log=<run_id>` so the
+visible screen can be matched to `journal.jsonl` records.
+
 Useful native TUI commands:
 
 - `/pause` asks CPython to stop at the next matching frame safepoint.
@@ -158,6 +163,8 @@ Useful native TUI commands:
 - `/trace clear` resets back to the target script.
 - `/break off|line|call|return|exception|all` controls which matching trace
   events stop the interpreter.
+- Natural-language stop requests such as `我要在 optim 里停` use a one-shot
+  break by default, so `/resume` continues normally after the first stop.
 - `/step` steps into the next matching Python line, including traced package
   code.
 - `/next` steps over calls by stopping at the next matching line at the current
@@ -167,6 +174,8 @@ Useful native TUI commands:
 - `/exec <python code>` queues Python code to execute in the current CPython
   frame context, then stays paused until `/resume`.
 - `/btw <message>` asks Codex a side question without pausing.
+- Status questions such as `到什么阶段了` are answered locally from the most
+  recent frame event and do not call Codex.
 - Natural-language runtime controls are parsed locally. For example,
   `我要在 optim 里停` adds `torch.optim` to the trace scope, breaks on optimizer
   Python calls, and continues until that breakpoint is hit.

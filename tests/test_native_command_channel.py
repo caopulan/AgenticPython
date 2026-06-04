@@ -294,3 +294,64 @@ def test_native_break_mode_stops_until_resumed(tmp_path):
             process.wait(timeout=3)
 
     assert process.returncode == 0
+
+
+def test_native_break_once_stops_only_until_one_resume(tmp_path):
+    repo_root = Path.cwd()
+    try:
+        native_python = resolve_native_python(repo_root, None)
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+
+    target = tmp_path / "break_once_target.py"
+    target.write_text(
+        "\n".join(
+            [
+                "import time",
+                "for step in range(40):",
+                "    marker = step",
+                "    time.sleep(0.01)",
+                "print('done', flush=True)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    paths = make_native_run_paths(tmp_path / "run")
+    paths.out_dir.mkdir(parents=True)
+    paths.command_dir.mkdir()
+    paths.events_path.write_text("", encoding="utf-8")
+    paths.commands_path.write_text("", encoding="utf-8")
+    env = build_native_env(
+        os.environ,
+        repo_root=repo_root,
+        paths=paths,
+        run_id="native-break-once-test",
+        script_path=target,
+    )
+
+    process = subprocess.Popen(
+        [str(native_python), str(target)],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and "break_once_target.py" not in paths.events_path.read_text(encoding="utf-8"):
+            time.sleep(0.05)
+        write_control_command(paths.commands_path, "set_break_once", "line")
+        time.sleep(0.8)
+        assert process.poll() is None
+        write_control_command(paths.commands_path, "resume")
+        stdout, stderr = process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=3)
+
+    assert process.returncode == 0, stderr
+    assert "done" in stdout

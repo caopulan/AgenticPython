@@ -77,6 +77,10 @@ Each native TUI run writes:
 - `commands.jsonl` and `commands/*.py` for the command channel and exact
   injected code.
 
+Journaling is enabled by default. Use `AGENTICPYTHON_RUN_LOG=0` or
+`AGENTICPYTHON_DISABLE_RUN_LOG=1` to disable `journal.jsonl` writes. When it is
+enabled, the native TUI status line displays `log=<run_id>`.
+
 The command channel supports dynamic trace control:
 
 - `set_filters\t<filter1>\t<filter2>` replaces the filename-substring filters.
@@ -84,6 +88,8 @@ The command channel supports dynamic trace control:
 - `clear_filters` traces all Python frames.
 - `set_break_mode\toff|line|call|return|exception|all` controls automatic
   stopping at matching events.
+- `set_break_once\tline|call|return|exception|all` stops at the next matching
+  event, then automatically clears the break mode before waiting for `resume`.
 - `set_step_mode\tinto|over|out|none` enables one-shot debugger-style stepping.
 - `resume` releases an internal CPython break wait.
 
@@ -108,6 +114,7 @@ The same controls can be requested in Chinese natural language:
 我想在 optimizer 每一行停住
 在任意 python 代码每一行都停
 optim 里不要停了
+到什么阶段了
 ```
 
 These controls operate at Python frame trace-event level. They can enter Python
