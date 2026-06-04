@@ -101,3 +101,32 @@ Example non-interrupting side chat:
 ```text
 /btw 当前 loss 看起来正常吗？
 ```
+
+## Native CPython Frame Backend
+
+The repository also contains the first CPython-level backend foundation. It
+keeps CPython source in the ignored `.agentpython-build/` cache and stores only
+reviewable patch files in git.
+
+```bash
+.venv/bin/python -m tools.cpython_backend.fetch_cpython
+.venv/bin/python -m tools.cpython_backend.apply_patches
+cd .agentpython-build/cpython
+./configure --prefix="$PWD/../install-agentic"
+make -j4
+make install
+```
+
+Smoke test:
+
+```bash
+PYTHON_AGENTIC=1 \
+PYTHON_AGENTIC_RUN_ID=smoke \
+PYTHON_AGENTIC_EVENTS=/tmp/agentic-events.jsonl \
+.agentpython-build/install-agentic/bin/python3.12 examples/native_package_demo/run_demo.py
+rg 'pkgdemo/inner.py.*compute' /tmp/agentic-events.jsonl
+```
+
+The current native probe emits JSONL `call`, `line`, `return`, and `exception`
+frame events for Python code, including imported package internals. It does not
+call Codex from inside CPython.

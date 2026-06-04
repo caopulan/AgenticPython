@@ -1,6 +1,6 @@
 # CPython Frame Backend Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add the first robust native-backend foundation for AgenticPython: a versioned frame-event protocol, local controller boundary, reproducible CPython patch workflow, and a smoke path that proves package-internal Python frame observation.
 
@@ -9,6 +9,29 @@
 **Tech Stack:** Python 3.12-compatible stdlib, pytest, Unix domain sockets, newline-delimited JSON, CPython 3.12.x patchset managed outside the repo build cache.
 
 ---
+
+## Execution Record
+
+Completed on 2026-06-04.
+
+Verified:
+
+- `.venv/bin/python -m pytest -q` passed with `38 passed, 1 skipped`.
+- `.venv/bin/agentpython native-protocol-smoke` returned the expected
+  `line`/`resume`/`frame-smoke` JSON payload.
+- `.venv/bin/python -m tools.cpython_backend.fetch_cpython` fetched CPython
+  `v3.12.13` into ignored `.agentpython-build/cpython`.
+- `.venv/bin/python -m tools.cpython_backend.apply_patches` replayed
+  `runtimes/cpython/patches/0001-agentic-frame-probe.patch` onto a clean
+  CPython checkout.
+- `.agentpython-build/cpython` configured, built with `make -j4`, and installed
+  with `make install`.
+- The installed patched runtime produced `result=8` for
+  `examples/native_package_demo/run_demo.py`.
+- With `PYTHON_AGENTIC=1`, the patched runtime emitted JSONL frame events
+  decoded by `agenticpython.native.protocol.decode_event`.
+- The event stream included `call`, `line`, and `return` events for imported
+  package function `examples/native_package_demo/pkgdemo/inner.py::compute`.
 
 ## File Structure
 
@@ -31,7 +54,7 @@
 - Create: `src/agenticpython/native/protocol.py`
 - Test: `tests/test_native_protocol.py`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 import json
@@ -134,13 +157,13 @@ def test_summarize_value_is_bounded_and_stable_for_bad_repr():
     assert summarize_value(BadRepr(), max_chars=80) == "<repr failed: RuntimeError>"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_native_protocol.py -q`
 
 Expected: FAIL during import with `ModuleNotFoundError: No module named 'agenticpython.native'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/agenticpython/native/__init__.py`:
 
@@ -328,19 +351,19 @@ def _optional_string_map(data: dict[str, Any], key: str) -> dict[str, str] | Non
     return _string_map(value, key)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_native_protocol.py -q`
 
 Expected: `4 passed`.
 
-- [ ] **Step 5: Run full tests**
+- [x] **Step 5: Run full tests**
 
 Run: `.venv/bin/python -m pytest -q`
 
 Expected: all existing tests pass plus the new protocol tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/agenticpython/native tests/test_native_protocol.py
@@ -353,7 +376,7 @@ git commit -m "feat: add native frame protocol foundation"
 - Modify: `src/agenticpython/cli.py`
 - Test: `tests/test_native_protocol.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_native_protocol.py`:
 
@@ -369,13 +392,13 @@ def test_native_protocol_smoke_returns_decoded_event():
     assert payload["frame_id"] == "frame-smoke"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_native_protocol.py::test_native_protocol_smoke_returns_decoded_event -q`
 
 Expected: FAIL with `ImportError` or `AttributeError` for `_native_protocol_smoke`.
 
-- [ ] **Step 3: Implement the smoke helper and CLI command**
+- [x] **Step 3: Implement the smoke helper and CLI command**
 
 Add imports to `src/agenticpython/cli.py`:
 
@@ -435,7 +458,7 @@ def _native_protocol_smoke() -> dict[str, Any]:
     }
 ```
 
-- [ ] **Step 4: Verify CLI**
+- [x] **Step 4: Verify CLI**
 
 Run: `.venv/bin/python -m pytest tests/test_native_protocol.py -q`
 
@@ -445,7 +468,7 @@ Run: `.venv/bin/agentpython native-protocol-smoke`
 
 Expected JSON contains `"event": "line"`, `"command": "resume"`, and `"frame_id": "frame-smoke"`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/agenticpython/cli.py tests/test_native_protocol.py
@@ -461,7 +484,7 @@ git commit -m "feat: add native protocol smoke command"
 - Create: `runtimes/cpython/README.md`
 - Test: `tests/test_cpython_backend_tools.py`
 
-- [ ] **Step 1: Write tests for local command construction**
+- [x] **Step 1: Write tests for local command construction**
 
 Create `tests/test_cpython_backend_tools.py`:
 
@@ -503,13 +526,13 @@ def test_patch_files_are_sorted(tmp_path):
     ]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_cpython_backend_tools.py -q`
 
 Expected: FAIL because `tools.cpython_backend` does not exist.
 
-- [ ] **Step 3: Implement source-management helpers**
+- [x] **Step 3: Implement source-management helpers**
 
 Create `tools/cpython_backend/fetch_cpython.py`:
 
@@ -601,7 +624,7 @@ source into `.agentpython-build/cpython`:
 The first supported tag is `v3.12.13`.
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `.venv/bin/python -m pytest tests/test_cpython_backend_tools.py -q`
 
@@ -611,7 +634,7 @@ Run: `.venv/bin/python -m pytest -q`
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .gitignore runtimes/cpython/README.md tools/cpython_backend tests/test_cpython_backend_tools.py
@@ -624,7 +647,7 @@ git commit -m "feat: add cpython backend source tooling"
 - Create: `src/agenticpython/native/controller.py`
 - Test: `tests/test_native_controller.py`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Create `tests/test_native_controller.py`:
 
@@ -668,13 +691,13 @@ def test_native_event_journal_appends_decoded_events(tmp_path):
     ]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_native_controller.py -q`
 
 Expected: FAIL because `agenticpython.native.controller` does not exist.
 
-- [ ] **Step 3: Implement journal skeleton**
+- [x] **Step 3: Implement journal skeleton**
 
 Create `src/agenticpython/native/controller.py`:
 
@@ -704,7 +727,7 @@ def _without_none(data: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in data.items() if value is not None and value != {}}
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `.venv/bin/python -m pytest tests/test_native_controller.py -q`
 
@@ -714,7 +737,7 @@ Run: `.venv/bin/python -m pytest -q`
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/agenticpython/native/controller.py tests/test_native_controller.py
@@ -729,7 +752,7 @@ git commit -m "feat: add native event journal"
 - Create: `examples/native_package_demo/pkgdemo/inner.py`
 - Create: `examples/native_package_demo/run_demo.py`
 
-- [ ] **Step 1: Create the toy package demo**
+- [x] **Step 1: Create the toy package demo**
 
 Create `examples/native_package_demo/pkgdemo/__init__.py`:
 
@@ -756,7 +779,7 @@ from pkgdemo import compute
 print(f"result={compute(3)}")
 ```
 
-- [ ] **Step 2: Add a minimal patch**
+- [x] **Step 2: Add a minimal patch**
 
 Create `runtimes/cpython/patches/0001-agentic-frame-probe.patch` with the
 smallest reviewable eval-loop change for CPython `v3.12.13`. The patch must:
@@ -769,7 +792,7 @@ smallest reviewable eval-loop change for CPython `v3.12.13`. The patch must:
 - include filename, function, line number, process id, and frame pointer-derived
   frame id.
 
-- [ ] **Step 3: Build and smoke manually**
+- [x] **Step 3: Build and smoke manually**
 
 Run:
 
@@ -789,7 +812,7 @@ Expected:
 - `/tmp/agentic-events.jsonl` contains at least one event whose filename ends
   with `pkgdemo/inner.py` and function is `compute`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add runtimes/cpython/patches/0001-agentic-frame-probe.patch examples/native_package_demo
