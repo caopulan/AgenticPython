@@ -96,3 +96,13 @@ def test_summarize_value_is_bounded_and_stable_for_bad_repr():
 
     assert summarize_value(long_value, max_chars=12) == "'xxxxxxxx..."
     assert summarize_value(BadRepr(), max_chars=80) == "<repr failed: RuntimeError>"
+
+
+def test_native_protocol_smoke_returns_decoded_event():
+    from agenticpython.cli import _native_protocol_smoke
+
+    payload = _native_protocol_smoke()
+
+    assert payload["event"] == "line"
+    assert payload["command"] == "resume"
+    assert payload["frame_id"] == "frame-smoke"

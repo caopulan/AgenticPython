@@ -8,6 +8,12 @@ from typing import Any
 
 from .actions import AgentAction
 from .codex_client import CodexSdkDecisionClient
+from .native.protocol import (
+    PROTOCOL_VERSION,
+    ControlCommand,
+    decode_event,
+    encode_command,
+)
 from .runtime import AgenticRunner
 from .triggers import TriggerRule
 from .tui import run_tui
@@ -26,6 +32,8 @@ def main() -> None:
     smoke_parser = subparsers.add_parser("llm-smoke", help="Verify Codex SDK local-auth action output")
     smoke_parser.add_argument("--model")
 
+    subparsers.add_parser("native-protocol-smoke", help="Exercise the native frame protocol locally")
+
     tui_parser = subparsers.add_parser("tui", help="Run a script in the interactive terminal UI")
     tui_parser.add_argument("script")
     tui_parser.add_argument("--triggers")
@@ -39,6 +47,8 @@ def main() -> None:
         _run(args)
     elif args.command == "llm-smoke":
         _llm_smoke(args)
+    elif args.command == "native-protocol-smoke":
+        print(json.dumps(_native_protocol_smoke(), indent=2))
     elif args.command == "tui":
         _tui(args)
 
@@ -89,6 +99,37 @@ def _tui(args: argparse.Namespace) -> None:
         step_delay=args.step_delay,
         log_level=args.log_level,
     )
+
+
+def _native_protocol_smoke() -> dict[str, Any]:
+    event = decode_event(
+        json.dumps(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "event": "line",
+                "run_id": "smoke",
+                "process_id": 1,
+                "frame_id": "frame-smoke",
+                "filename": "smoke.py",
+                "function": "<module>",
+                "lineno": 1,
+                "locals": {"x": "1"},
+            }
+        )
+    )
+    command = encode_command(
+        ControlCommand(
+            command="resume",
+            run_id=event.run_id,
+            frame_id=event.frame_id,
+            reason="smoke complete",
+        )
+    )
+    return {
+        "event": event.event,
+        "command": json.loads(command)["command"],
+        "frame_id": event.frame_id,
+    }
 
 
 def _load_triggers(trigger_path: str | None) -> list[TriggerRule]:
