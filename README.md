@@ -148,12 +148,41 @@ Useful native TUI commands:
 
 - `/pause` asks CPython to stop at the next matching frame safepoint.
 - `/resume` resumes the process.
+- `/continue` clears one-shot step state and resumes.
+- `/trace show` prints the current trace scope.
+- `/trace script` traces only the target script.
+- `/trace package torch.optim` adds a Python package source directory to the
+  trace scope.
+- `/trace path <path-substring>` adds a filename substring to the trace scope.
+- `/trace all` traces all Python frames. This is powerful but noisy.
+- `/trace clear` resets back to the target script.
+- `/break off|line|call|return|exception|all` controls which matching trace
+  events stop the interpreter.
+- `/step` steps into the next matching Python line, including traced package
+  code.
+- `/next` steps over calls by stopping at the next matching line at the current
+  or shallower frame depth.
+- `/out` runs until the current frame returns or execution reaches a shallower
+  frame.
 - `/exec <python code>` queues Python code to execute in the current CPython
   frame context, then stays paused until `/resume`.
 - `/btw <message>` asks Codex a side question without pausing.
 - Any other text pauses, asks Codex for Python code, queues that code, and
   waits for `/resume`.
 - `/quit` exits the process.
+
+The trace scope is matched against Python frame filenames. CPython can stop at
+Python `call`, `line`, `return`, and `exception` events in any traced Python
+file. It still cannot stop inside C++/ATen/CUDA/native kernels or inside a
+single Python expression between bytecode operations.
+
+Example: step from the training script into PyTorch's Python optimizer layer:
+
+```text
+/pause
+/trace package torch.optim
+/step
+```
 
 Example direct intervention:
 

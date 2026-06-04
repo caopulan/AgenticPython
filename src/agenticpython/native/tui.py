@@ -5,6 +5,7 @@ from collections import deque
 import curses
 from dataclasses import dataclass
 from datetime import datetime
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -97,6 +98,12 @@ def write_exec_command(commands_path: Path, code_path: Path) -> None:
         handle.write(f"exec_file\t{code_path}\n")
 
 
+def write_control_command(commands_path: Path, command: str, *args: str) -> None:
+    with commands_path.open("a", encoding="utf-8") as handle:
+        fields = [command, *args]
+        handle.write("\t".join(fields) + "\n")
+
+
 class NativeProcessSession:
     def __init__(
         self,
@@ -125,6 +132,9 @@ class NativeProcessSession:
         self._client: CodexSdkDecisionClient | None = None
         self._client_lock = threading.Lock()
         self._command_index = 0
+        self._trace_filters: list[str] = [str(self.script_path)]
+        self._break_mode = "off"
+        self._step_mode = "none"
         self._state_lock = threading.RLock()
         self._journal_lock = threading.RLock()
 
@@ -162,6 +172,8 @@ class NativeProcessSession:
                 "commands_path": str(self.paths.commands_path),
                 "journal_path": str(self.paths.journal_path),
                 "python_agentic_filter": env.get("PYTHON_AGENTIC_FILTER"),
+                "trace_filters": self._trace_filters,
+                "break_mode": self._break_mode,
             },
         )
         self.log_line(f"started native CPython pid={self.process.pid} python={self.native_python}", kind="system")
@@ -196,6 +208,7 @@ class NativeProcessSession:
     def resume(self) -> None:
         if self.paths.pause_path.exists():
             self.paths.pause_path.unlink()
+        write_control_command(self.paths.commands_path, "resume")
         with self._state_lock:
             self.paused = False
         self.log_line("resumed", kind="system", event="resume")
@@ -225,6 +238,65 @@ class NativeProcessSession:
         if preview:
             self.log_line(preview[:160], kind="patch")
         return code_path
+
+    def set_trace_filters(self, filters: list[str], *, source: str = "operator") -> None:
+        normalized = [item for item in filters if item]
+        with self._state_lock:
+            self._trace_filters = normalized
+        if normalized:
+            write_control_command(self.paths.commands_path, "set_filters", *normalized)
+            rendered = ", ".join(normalized)
+        else:
+            write_control_command(self.paths.commands_path, "clear_filters")
+            rendered = "all Python frames"
+        self._write_journal("trace_filters_set", {"source": source, "filters": normalized})
+        self.log_line(f"trace filters: {rendered}", kind="system", event="trace_filters_set")
+
+    def add_trace_filter(self, filter_value: str, *, source: str = "operator") -> None:
+        normalized = filter_value
+        with self._state_lock:
+            if normalized not in self._trace_filters:
+                self._trace_filters.append(normalized)
+        write_control_command(self.paths.commands_path, "add_filter", normalized)
+        self._write_journal("trace_filter_added", {"source": source, "filter": normalized})
+        self.log_line(f"trace filter added: {normalized}", kind="system", event="trace_filter_added")
+
+    def set_break_mode(self, mode: str) -> None:
+        allowed = {"off", "line", "call", "return", "exception", "all"}
+        if mode not in allowed:
+            self.log_line(f"unknown break mode: {mode}", kind="error")
+            return
+        with self._state_lock:
+            self._break_mode = mode
+        write_control_command(self.paths.commands_path, "set_break_mode", mode)
+        self._write_journal("break_mode_set", {"mode": mode})
+        self.log_line(f"break mode: {mode}", kind="system", event="break_mode_set")
+
+    def step(self, mode: str) -> None:
+        allowed = {"into", "over", "out"}
+        if mode not in allowed:
+            self.log_line(f"unknown step mode: {mode}", kind="error")
+            return
+        with self._state_lock:
+            self._step_mode = mode
+        write_control_command(self.paths.commands_path, "set_step_mode", mode)
+        self.resume()
+        self._write_journal("step_mode_set", {"mode": mode})
+        self.log_line(f"step mode: {mode}", kind="system", event="step_mode_set")
+
+    def continue_execution(self) -> None:
+        with self._state_lock:
+            self._step_mode = "none"
+        write_control_command(self.paths.commands_path, "set_step_mode", "none")
+        self.resume()
+
+    def trace_status(self) -> str:
+        with self._state_lock:
+            filters = list(self._trace_filters)
+            break_mode = self._break_mode
+            step_mode = self._step_mode
+        filters_text = ", ".join(filters) if filters else "all Python frames"
+        return f"trace={filters_text}; break={break_mode}; step={step_mode}"
 
     def submit_instruction(self, instruction: str, visible_log: list[str]) -> None:
         self._write_journal("user_instruction", {"text": instruction})
@@ -401,7 +473,10 @@ def _native_curses_main(stdscr: Any, session: NativeProcessSession, log: TuiLog,
     stdscr.nodelay(True)
     stdscr.keypad(True)
     input_text = ""
-    session.log_line("Native CPython TUI. Commands: /pause /resume /exec <code> /btw <question> /quit.", kind="system")
+    session.log_line(
+        "Native CPython TUI. Commands: /pause /resume /continue /trace /break /step /next /out /exec /btw /quit.",
+        kind="system",
+    )
 
     while True:
         _render_native(stdscr, session, log, input_text)
@@ -442,9 +517,29 @@ def _handle_native_input(text: str, session: NativeProcessSession, log: TuiLog) 
     if normalized in {"/resume", "/start", "resume", "start", "继续", "开始"}:
         session.resume()
         return False
+    if normalized in {"/continue", "/cont", "/c", "continue", "cont"}:
+        session.continue_execution()
+        return False
+    if normalized in {"/step", "/s", "step"}:
+        session.step("into")
+        return False
+    if normalized in {"/next", "/n", "next"}:
+        session.step("over")
+        return False
+    if normalized in {"/out", "/finish", "out", "finish"}:
+        session.step("out")
+        return False
     if normalized in {"/help", "help", "帮助"}:
         session.log_line("Use /exec <python code> for direct CPython-frame execution.", kind="system")
+        session.log_line("Use /trace script|all|package <name>|path <path>|show to control trace scope.", kind="system")
+        session.log_line("Use /break off|line|call|return|exception|all and /step /next /out /continue to control depth.", kind="system")
         session.log_line("Natural-language text pauses, asks Codex for Python code, queues it, and waits for /resume.", kind="system")
+        return False
+    if normalized == "/trace" or normalized.startswith("/trace "):
+        _handle_trace_command(text, session)
+        return False
+    if normalized == "/break" or normalized.startswith("/break "):
+        _handle_break_command(text, session)
         return False
     if normalized == "/btw" or normalized.startswith("/btw "):
         question = text[4:].strip()
@@ -469,6 +564,55 @@ def _handle_native_input(text: str, session: NativeProcessSession, log: TuiLog) 
     return False
 
 
+def _handle_trace_command(text: str, session: NativeProcessSession) -> None:
+    parts = text.split(maxsplit=2)
+    if len(parts) == 1 or parts[1] == "show":
+        session.log_line(session.trace_status(), kind="system", event="trace_status")
+        return
+    mode = parts[1]
+    value = parts[2].strip() if len(parts) > 2 else ""
+    if mode == "script":
+        session.set_trace_filters([str(session.script_path)], source="trace script")
+        return
+    if mode == "all":
+        session.set_trace_filters([], source="trace all")
+        return
+    if mode == "clear":
+        session.set_trace_filters([str(session.script_path)], source="trace clear")
+        return
+    if mode == "package":
+        if not value:
+            session.log_line("Usage: /trace package <module.name>", kind="system")
+            return
+        resolved = _resolve_package_filter(value)
+        if resolved is None:
+            session.log_line(f"could not resolve package: {value}", kind="error")
+            return
+        session.add_trace_filter(resolved, source=f"trace package {value}")
+        return
+    if mode == "path":
+        if not value:
+            session.log_line("Usage: /trace path <path-substring>", kind="system")
+            return
+        session.add_trace_filter(value, source="trace path")
+        return
+    if mode == "set":
+        if not value:
+            session.log_line("Usage: /trace set <path-substring>", kind="system")
+            return
+        session.set_trace_filters([value], source="trace set")
+        return
+    session.log_line("Usage: /trace script|all|clear|package <name>|path <path>|set <path>|show", kind="system")
+
+
+def _handle_break_command(text: str, session: NativeProcessSession) -> None:
+    parts = text.split(maxsplit=1)
+    if len(parts) == 1:
+        session.log_line("Usage: /break off|line|call|return|exception|all", kind="system")
+        return
+    session.set_break_mode(parts[1].strip().lower())
+
+
 def _render_native(stdscr: Any, session: NativeProcessSession, log: TuiLog, input_text: str) -> None:
     height, width = stdscr.getmaxyx()
     stdscr.erase()
@@ -488,7 +632,7 @@ def _render_native(stdscr: Any, session: NativeProcessSession, log: TuiLog, inpu
     stdscr.addnstr(
         height - 2,
         0,
-        f" {status.upper()}  out={session.out_dir}  commands=/pause /resume /exec /btw /quit",
+        f" {status.upper()}  {session.trace_status()}  out={session.out_dir}",
         max(0, width - 1),
         _color_pair(2),
     )
@@ -625,3 +769,14 @@ def _target_names(target: ast.AST) -> list[str]:
     if isinstance(target, (ast.Tuple, ast.List)):
         return [name for element in target.elts for name in _target_names(element)]
     return []
+
+
+def _resolve_package_filter(package_name: str) -> str | None:
+    spec = importlib.util.find_spec(package_name)
+    if spec is None:
+        return None
+    if spec.submodule_search_locations:
+        return str(Path(next(iter(spec.submodule_search_locations))).resolve())
+    if spec.origin is not None:
+        return str(Path(spec.origin).resolve())
+    return None

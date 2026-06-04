@@ -75,3 +75,30 @@ Each native TUI run writes:
 - `frame_events.jsonl` for CPython frame events.
 - `commands.jsonl` and `commands/*.py` for the command channel and exact
   injected code.
+
+The command channel supports dynamic trace control:
+
+- `set_filters\t<filter1>\t<filter2>` replaces the filename-substring filters.
+- `add_filter\t<filter>` adds one filename-substring filter.
+- `clear_filters` traces all Python frames.
+- `set_break_mode\toff|line|call|return|exception|all` controls automatic
+  stopping at matching events.
+- `set_step_mode\tinto|over|out|none` enables one-shot debugger-style stepping.
+- `resume` releases an internal CPython break wait.
+
+The TUI exposes these as slash commands:
+
+```text
+/trace script
+/trace package torch.optim
+/trace all
+/break line
+/step
+/next
+/out
+/continue
+```
+
+These controls operate at Python frame trace-event level. They can enter Python
+files under packages such as `torch.optim`, but they cannot break inside
+C++/ATen/CUDA/native execution.

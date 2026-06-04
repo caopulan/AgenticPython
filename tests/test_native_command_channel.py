@@ -10,6 +10,7 @@ from agenticpython.native.tui import (
     build_native_env,
     make_native_run_paths,
     resolve_native_python,
+    write_control_command,
     write_exec_command,
 )
 
@@ -161,3 +162,135 @@ def test_native_command_prints_while_process_is_paused(tmp_path):
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=3)
+
+
+def test_native_trace_filter_can_expand_to_imported_python_file(tmp_path):
+    repo_root = Path.cwd()
+    try:
+        native_python = resolve_native_python(repo_root, None)
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+
+    helper = tmp_path / "helper.py"
+    helper.write_text(
+        "\n".join(
+            [
+                "def compute(value):",
+                "    total = value + 1",
+                "    return total",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "trace_target.py"
+    target.write_text(
+        "\n".join(
+            [
+                "import time",
+                "import helper",
+                "for step in range(30):",
+                "    helper.compute(step)",
+                "    time.sleep(0.05)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    paths = make_native_run_paths(tmp_path / "run")
+    paths.out_dir.mkdir(parents=True)
+    paths.command_dir.mkdir()
+    paths.events_path.write_text("", encoding="utf-8")
+    paths.commands_path.write_text("", encoding="utf-8")
+    env = build_native_env(
+        {**os.environ, "PYTHONPATH": str(tmp_path)},
+        repo_root=repo_root,
+        paths=paths,
+        run_id="native-dynamic-filter-test",
+        script_path=target,
+    )
+
+    process = subprocess.Popen(
+        [str(native_python), str(target)],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and "trace_target.py" not in paths.events_path.read_text(encoding="utf-8"):
+            time.sleep(0.05)
+        write_control_command(paths.commands_path, "set_filters", str(target), str(helper))
+        process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=3)
+
+    events = paths.events_path.read_text(encoding="utf-8")
+    assert process.returncode == 0
+    assert "trace_target.py" in events
+    assert "helper.py" in events
+
+
+def test_native_break_mode_stops_until_resumed(tmp_path):
+    repo_root = Path.cwd()
+    try:
+        native_python = resolve_native_python(repo_root, None)
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+
+    target = tmp_path / "break_target.py"
+    target.write_text(
+        "\n".join(
+            [
+                "import time",
+                "for step in range(80):",
+                "    marker = step",
+                "    time.sleep(0.02)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    paths = make_native_run_paths(tmp_path / "run")
+    paths.out_dir.mkdir(parents=True)
+    paths.command_dir.mkdir()
+    paths.events_path.write_text("", encoding="utf-8")
+    paths.commands_path.write_text("", encoding="utf-8")
+    env = build_native_env(
+        os.environ,
+        repo_root=repo_root,
+        paths=paths,
+        run_id="native-break-mode-test",
+        script_path=target,
+    )
+
+    process = subprocess.Popen(
+        [str(native_python), str(target)],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and "break_target.py" not in paths.events_path.read_text(encoding="utf-8"):
+            time.sleep(0.05)
+        write_control_command(paths.commands_path, "set_break_mode", "line")
+        time.sleep(0.3)
+        assert process.poll() is None
+        write_control_command(paths.commands_path, "set_break_mode", "off")
+        write_control_command(paths.commands_path, "resume")
+        process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=3)
+
+    assert process.returncode == 0

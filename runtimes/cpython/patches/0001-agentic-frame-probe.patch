@@ -1,5 +1,5 @@
 diff --git a/Python/pylifecycle.c b/Python/pylifecycle.c
-index f5bea14..64f3be0 100644
+index f5bea14..898882c 100644
 --- a/Python/pylifecycle.c
 +++ b/Python/pylifecycle.c
 @@ -2,6 +2,9 @@
@@ -23,12 +23,33 @@ index f5bea14..64f3be0 100644
  #if defined(__APPLE__)
  #include <mach-o/loader.h>
  #endif
-@@ -69,6 +76,319 @@ static PyStatus init_sys_streams(PyThreadState *tstate);
+@@ -69,6 +76,552 @@ static PyStatus init_sys_streams(PyThreadState *tstate);
  static void wait_for_thread_shutdown(PyThreadState *tstate);
  static void call_ll_exitfuncs(_PyRuntimeState *runtime);
  
 +static FILE *agentic_events_file = NULL;
 +static long agentic_commands_offset = 0;
++static int agentic_waiting_for_resume = 0;
++static int agentic_break_mode = 0;
++static int agentic_step_mode = 0;
++static int agentic_step_origin_depth = 0;
++static int agentic_filters_initialized = 0;
++static int agentic_filter_count = 0;
++static size_t agentic_filter_storage_used = 0;
++static char agentic_filter_storage[8192];
++static const char *agentic_filters[64];
++
++#define AGENTIC_BREAK_OFF 0
++#define AGENTIC_BREAK_LINE 1
++#define AGENTIC_BREAK_CALL 2
++#define AGENTIC_BREAK_RETURN 3
++#define AGENTIC_BREAK_EXCEPTION 4
++#define AGENTIC_BREAK_ALL 5
++
++#define AGENTIC_STEP_NONE 0
++#define AGENTIC_STEP_INTO 1
++#define AGENTIC_STEP_OVER 2
++#define AGENTIC_STEP_OUT 3
 +
 +static const char *
 +agentic_trace_event_name(int what)
@@ -64,17 +85,87 @@ index f5bea14..64f3be0 100644
 +    return stderr;
 +}
 +
++static void
++agentic_set_filters_from_tabs(const char *filters)
++{
++    agentic_filter_count = 0;
++    agentic_filter_storage[0] = '\0';
++    agentic_filter_storage_used = 0;
++    agentic_filters_initialized = 1;
++    if (filters == NULL || filters[0] == '\0' || strcmp(filters, "all") == 0) {
++        return;
++    }
++
++    size_t length = strlen(filters);
++    if (length >= sizeof(agentic_filter_storage)) {
++        length = sizeof(agentic_filter_storage) - 1;
++    }
++    memcpy(agentic_filter_storage, filters, length);
++    agentic_filter_storage[length] = '\0';
++    agentic_filter_storage_used = length + 1;
++
++    char *cursor = agentic_filter_storage;
++    while (cursor != NULL && *cursor != '\0' && agentic_filter_count < 64) {
++        char *separator = strchr(cursor, '\t');
++        if (separator != NULL) {
++            *separator = '\0';
++        }
++        if (*cursor != '\0') {
++            agentic_filters[agentic_filter_count] = cursor;
++            agentic_filter_count++;
++        }
++        if (separator == NULL) {
++            break;
++        }
++        cursor = separator + 1;
++    }
++}
++
++static void
++agentic_add_filter(const char *filter)
++{
++    if (filter == NULL || filter[0] == '\0' || agentic_filter_count >= 64) {
++        return;
++    }
++    if (!agentic_filters_initialized) {
++        agentic_set_filters_from_tabs(Py_GETENV("PYTHON_AGENTIC_FILTER"));
++    }
++    size_t used = agentic_filter_storage_used;
++    size_t length = strlen(filter);
++    if (used + length + 1 >= sizeof(agentic_filter_storage)) {
++        return;
++    }
++    char *destination = agentic_filter_storage + used;
++    memcpy(destination, filter, length + 1);
++    agentic_filters[agentic_filter_count] = destination;
++    agentic_filter_count++;
++    agentic_filter_storage_used = used + length + 1;
++}
++
++static void
++agentic_init_filters_if_needed(void)
++{
++    if (!agentic_filters_initialized) {
++        agentic_set_filters_from_tabs(Py_GETENV("PYTHON_AGENTIC_FILTER"));
++    }
++}
++
 +static int
 +agentic_filename_matches_filter(const char *filename)
 +{
-+    char *filter = Py_GETENV("PYTHON_AGENTIC_FILTER");
-+    if (filter == NULL || filter[0] == '\0') {
++    agentic_init_filters_if_needed();
++    if (agentic_filter_count == 0) {
 +        return 1;
 +    }
 +    if (filename == NULL) {
 +        return 0;
 +    }
-+    return strstr(filename, filter) != NULL;
++    for (int i = 0; i < agentic_filter_count; i++) {
++        if (strstr(filename, agentic_filters[i]) != NULL) {
++            return 1;
++        }
++    }
++    return 0;
 +}
 +
 +static int
@@ -173,6 +264,100 @@ index f5bea14..64f3be0 100644
 +}
 +
 +static void
++agentic_set_break_mode(const char *mode)
++{
++    if (mode == NULL) {
++        return;
++    }
++    if (strcmp(mode, "off") == 0 || strcmp(mode, "none") == 0) {
++        agentic_break_mode = AGENTIC_BREAK_OFF;
++    }
++    else if (strcmp(mode, "line") == 0) {
++        agentic_break_mode = AGENTIC_BREAK_LINE;
++    }
++    else if (strcmp(mode, "call") == 0) {
++        agentic_break_mode = AGENTIC_BREAK_CALL;
++    }
++    else if (strcmp(mode, "return") == 0) {
++        agentic_break_mode = AGENTIC_BREAK_RETURN;
++    }
++    else if (strcmp(mode, "exception") == 0) {
++        agentic_break_mode = AGENTIC_BREAK_EXCEPTION;
++    }
++    else if (strcmp(mode, "all") == 0) {
++        agentic_break_mode = AGENTIC_BREAK_ALL;
++    }
++}
++
++static int
++agentic_frame_depth(PyFrameObject *frame)
++{
++    int depth = 0;
++    PyFrameObject *cursor = frame;
++    Py_XINCREF(cursor);
++    while (cursor != NULL) {
++        depth++;
++        PyFrameObject *back = PyFrame_GetBack(cursor);
++        Py_DECREF(cursor);
++        cursor = back;
++    }
++    return depth;
++}
++
++static void
++agentic_set_step_mode(PyFrameObject *frame, const char *mode)
++{
++    if (mode == NULL) {
++        return;
++    }
++    if (strcmp(mode, "none") == 0 || strcmp(mode, "off") == 0) {
++        agentic_step_mode = AGENTIC_STEP_NONE;
++        agentic_step_origin_depth = 0;
++    }
++    else if (strcmp(mode, "into") == 0 || strcmp(mode, "step") == 0) {
++        agentic_step_mode = AGENTIC_STEP_INTO;
++        agentic_step_origin_depth = agentic_frame_depth(frame);
++    }
++    else if (strcmp(mode, "over") == 0 || strcmp(mode, "next") == 0) {
++        agentic_step_mode = AGENTIC_STEP_OVER;
++        agentic_step_origin_depth = agentic_frame_depth(frame);
++    }
++    else if (strcmp(mode, "out") == 0) {
++        agentic_step_mode = AGENTIC_STEP_OUT;
++        agentic_step_origin_depth = agentic_frame_depth(frame);
++    }
++}
++
++static void
++agentic_apply_command(PyFrameObject *frame, char *line)
++{
++    if (strncmp(line, "exec_file\t", 10) == 0) {
++        agentic_execute_code_file(frame, line + 10);
++    }
++    else if (strncmp(line, "set_filters\t", 12) == 0) {
++        agentic_set_filters_from_tabs(line + 12);
++    }
++    else if (strcmp(line, "clear_filters") == 0) {
++        agentic_set_filters_from_tabs(NULL);
++    }
++    else if (strncmp(line, "add_filter\t", 11) == 0) {
++        agentic_add_filter(line + 11);
++    }
++    else if (strncmp(line, "set_break_mode\t", 15) == 0) {
++        agentic_set_break_mode(line + 15);
++    }
++    else if (strncmp(line, "set_step_mode\t", 14) == 0) {
++        agentic_set_step_mode(frame, line + 14);
++    }
++    else if (strcmp(line, "resume") == 0 || strcmp(line, "continue") == 0) {
++        agentic_waiting_for_resume = 0;
++    }
++    else if (strcmp(line, "pause") == 0) {
++        agentic_waiting_for_resume = 1;
++    }
++}
++
++static void
 +agentic_poll_commands(PyFrameObject *frame)
 +{
 +    char *path = Py_GETENV("PYTHON_AGENTIC_COMMANDS");
@@ -194,9 +379,7 @@ index f5bea14..64f3be0 100644
 +    char line[4096];
 +    while (fgets(line, sizeof(line), file) != NULL) {
 +        agentic_strip_line(line);
-+        if (strncmp(line, "exec_file\t", 10) == 0) {
-+            agentic_execute_code_file(frame, line + 10);
-+        }
++        agentic_apply_command(frame, line);
 +    }
 +    long offset = ftell(file);
 +    if (offset >= 0) {
@@ -205,14 +388,61 @@ index f5bea14..64f3be0 100644
 +    fclose(file);
 +}
 +
++static int
++agentic_break_mode_matches(int what)
++{
++    if (agentic_break_mode == AGENTIC_BREAK_ALL) {
++        return 1;
++    }
++    if (agentic_break_mode == AGENTIC_BREAK_LINE && what == PyTrace_LINE) {
++        return 1;
++    }
++    if (agentic_break_mode == AGENTIC_BREAK_CALL && what == PyTrace_CALL) {
++        return 1;
++    }
++    if (agentic_break_mode == AGENTIC_BREAK_RETURN && what == PyTrace_RETURN) {
++        return 1;
++    }
++    if (agentic_break_mode == AGENTIC_BREAK_EXCEPTION && what == PyTrace_EXCEPTION) {
++        return 1;
++    }
++    return 0;
++}
++
++static int
++agentic_step_mode_matches(PyFrameObject *frame, int what)
++{
++    if (agentic_step_mode == AGENTIC_STEP_NONE) {
++        return 0;
++    }
++    int depth = agentic_frame_depth(frame);
++    if (agentic_step_mode == AGENTIC_STEP_INTO && what == PyTrace_LINE) {
++        agentic_step_mode = AGENTIC_STEP_NONE;
++        return 1;
++    }
++    if (agentic_step_mode == AGENTIC_STEP_OVER && what == PyTrace_LINE &&
++        depth <= agentic_step_origin_depth)
++    {
++        agentic_step_mode = AGENTIC_STEP_NONE;
++        return 1;
++    }
++    if (agentic_step_mode == AGENTIC_STEP_OUT &&
++        ((what == PyTrace_RETURN && depth <= agentic_step_origin_depth) ||
++         (what == PyTrace_LINE && depth < agentic_step_origin_depth)))
++    {
++        agentic_step_mode = AGENTIC_STEP_NONE;
++        return 1;
++    }
++    return 0;
++}
++
 +static void
 +agentic_wait_if_paused(PyFrameObject *frame)
 +{
 +    char *pause_path = Py_GETENV("PYTHON_AGENTIC_PAUSE_FILE");
-+    if (pause_path == NULL || pause_path[0] == '\0') {
-+        return;
-+    }
-+    while (agentic_path_exists(pause_path)) {
++    while (agentic_waiting_for_resume ||
++           (pause_path != NULL && pause_path[0] != '\0' && agentic_path_exists(pause_path)))
++    {
 +        agentic_poll_commands(frame);
 +#ifndef MS_WINDOWS
 +        usleep(50000);
@@ -324,6 +554,9 @@ index f5bea14..64f3be0 100644
 +    }
 +
 +    agentic_poll_commands(frame);
++    if (agentic_break_mode_matches(what) || agentic_step_mode_matches(frame, what)) {
++        agentic_waiting_for_resume = 1;
++    }
 +    agentic_wait_if_paused(frame);
 +
 +    Py_XDECREF(code);
@@ -343,7 +576,7 @@ index f5bea14..64f3be0 100644
  /* The following places the `_PyRuntime` structure in a location that can be
   * found without any external information. This is meant to ease access to the
   * interpreter state for various runtime debugging tools, but is *not* an
-@@ -1311,6 +1631,7 @@ Py_InitializeFromConfig(const PyConfig *config)
+@@ -1311,6 +1864,7 @@ Py_InitializeFromConfig(const PyConfig *config)
          if (_PyStatus_EXCEPTION(status)) {
              return status;
          }

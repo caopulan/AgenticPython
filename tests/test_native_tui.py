@@ -5,12 +5,14 @@ import pytest
 
 from agenticpython.native.protocol import FrameEvent
 from agenticpython.native.tui import (
+    _resolve_package_filter,
     _script_symbols,
     _source_windows,
     build_native_env,
     make_native_run_paths,
     NativeProcessSession,
     resolve_native_python,
+    write_control_command,
     write_exec_command,
 )
 from agenticpython.tui import TuiLog
@@ -55,6 +57,21 @@ def test_write_exec_command_appends_code_file_path(tmp_path):
     write_exec_command(commands_path, code_path)
 
     assert commands_path.read_text(encoding="utf-8") == f"exec_file\t{code_path}\n"
+
+
+def test_write_control_command_appends_tab_separated_command(tmp_path):
+    commands_path = tmp_path / "commands.jsonl"
+
+    write_control_command(commands_path, "set_filters", "script.py", "torch/optim")
+
+    assert commands_path.read_text(encoding="utf-8") == "set_filters\tscript.py\ttorch/optim\n"
+
+
+def test_resolve_package_filter_returns_package_directory():
+    resolved = _resolve_package_filter("torch.optim")
+
+    assert resolved is not None
+    assert resolved.endswith("torch/optim")
 
 
 def test_resolve_native_python_uses_requested_path(tmp_path):
