@@ -1,0 +1,188 @@
+diff --git a/Python/pylifecycle.c b/Python/pylifecycle.c
+index f5bea14..855d839 100644
+--- a/Python/pylifecycle.c
++++ b/Python/pylifecycle.c
+@@ -2,6 +2,9 @@
+ 
+ #include "Python.h"
+ 
++#include "cpython/code.h"
++#include "frameobject.h"
++
+ #include "pycore_ceval.h"         // _PyEval_FiniGIL()
+ #include "pycore_context.h"       // _PyContext_Init()
+ #include "pycore_exceptions.h"    // _PyExc_InitTypes()
+@@ -33,6 +36,10 @@
+ #include <locale.h>               // setlocale()
+ #include <stdlib.h>               // getenv()
+ 
++#ifndef MS_WINDOWS
++#  include <unistd.h>             // getpid()
++#endif
++
+ #if defined(__APPLE__)
+ #include <mach-o/loader.h>
+ #endif
+@@ -69,6 +76,154 @@ static PyStatus init_sys_streams(PyThreadState *tstate);
+ static void wait_for_thread_shutdown(PyThreadState *tstate);
+ static void call_ll_exitfuncs(_PyRuntimeState *runtime);
+ 
++static FILE *agentic_events_file = NULL;
++
++static const char *
++agentic_trace_event_name(int what)
++{
++    switch (what) {
++    case PyTrace_CALL:
++        return "call";
++    case PyTrace_LINE:
++        return "line";
++    case PyTrace_RETURN:
++        return "return";
++    case PyTrace_EXCEPTION:
++        return "exception";
++    default:
++        return NULL;
++    }
++}
++
++static FILE *
++agentic_trace_events_file(void)
++{
++    if (agentic_events_file != NULL) {
++        return agentic_events_file;
++    }
++
++    char *path = Py_GETENV("PYTHON_AGENTIC_EVENTS");
++    if (path != NULL && path[0] != '\0') {
++        agentic_events_file = fopen(path, "a");
++        if (agentic_events_file != NULL) {
++            return agentic_events_file;
++        }
++    }
++    return stderr;
++}
++
++static void
++agentic_write_json_string(FILE *file, const char *value)
++{
++    fputc('"', file);
++    if (value != NULL) {
++        for (const unsigned char *p = (const unsigned char *)value; *p != '\0'; p++) {
++            switch (*p) {
++            case '"':
++                fputs("\\\"", file);
++                break;
++            case '\\':
++                fputs("\\\\", file);
++                break;
++            case '\b':
++                fputs("\\b", file);
++                break;
++            case '\f':
++                fputs("\\f", file);
++                break;
++            case '\n':
++                fputs("\\n", file);
++                break;
++            case '\r':
++                fputs("\\r", file);
++                break;
++            case '\t':
++                fputs("\\t", file);
++                break;
++            default:
++                if (*p < 0x20) {
++                    fprintf(file, "\\u%04x", *p);
++                }
++                else {
++                    fputc(*p, file);
++                }
++            }
++        }
++    }
++    fputc('"', file);
++}
++
++static int
++agentic_trace_func(PyObject *obj, PyFrameObject *frame, int what, PyObject *arg)
++{
++    (void)obj;
++    (void)arg;
++
++    const char *event = agentic_trace_event_name(what);
++    if (event == NULL || frame == NULL) {
++        return 0;
++    }
++
++    PyObject *exc_type = NULL;
++    PyObject *exc_value = NULL;
++    PyObject *exc_tb = NULL;
++    PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
++
++    const char *filename = "<unknown>";
++    const char *function = "<unknown>";
++    PyCodeObject *code = PyFrame_GetCode(frame);
++    if (code != NULL) {
++        const char *candidate = PyUnicode_AsUTF8(code->co_filename);
++        if (candidate != NULL) {
++            filename = candidate;
++        }
++        candidate = PyUnicode_AsUTF8(code->co_name);
++        if (candidate != NULL) {
++            function = candidate;
++        }
++    }
++
++    FILE *file = agentic_trace_events_file();
++    if (file != NULL) {
++        char *run_id = Py_GETENV("PYTHON_AGENTIC_RUN_ID");
++        if (run_id == NULL || run_id[0] == '\0') {
++            run_id = "agentic";
++        }
++#ifdef MS_WINDOWS
++        int process_id = 0;
++#else
++        int process_id = (int)getpid();
++#endif
++        int lineno = PyFrame_GetLineNumber(frame);
++
++        fputs("{\"protocol_version\":1,\"event\":", file);
++        agentic_write_json_string(file, event);
++        fputs(",\"run_id\":", file);
++        agentic_write_json_string(file, run_id);
++        fprintf(file, ",\"process_id\":%d", process_id);
++        fprintf(file, ",\"frame_id\":\"%p\"", (void *)frame);
++        fputs(",\"filename\":", file);
++        agentic_write_json_string(file, filename);
++        fputs(",\"function\":", file);
++        agentic_write_json_string(file, function);
++        fprintf(file, ",\"lineno\":%d}\n", lineno);
++        fflush(file);
++    }
++
++    Py_XDECREF(code);
++    PyErr_Restore(exc_type, exc_value, exc_tb);
++    return 0;
++}
++
++static void
++agentic_install_trace_if_enabled(void)
++{
++    char *enabled = Py_GETENV("PYTHON_AGENTIC");
++    if (enabled != NULL && enabled[0] != '\0') {
++        PyEval_SetTrace(agentic_trace_func, NULL);
++    }
++}
++
+ /* The following places the `_PyRuntime` structure in a location that can be
+  * found without any external information. This is meant to ease access to the
+  * interpreter state for various runtime debugging tools, but is *not* an
+@@ -1311,6 +1466,7 @@ Py_InitializeFromConfig(const PyConfig *config)
+         if (_PyStatus_EXCEPTION(status)) {
+             return status;
+         }
++        agentic_install_trace_if_enabled();
+     }
+ 
+     return _PyStatus_OK();
