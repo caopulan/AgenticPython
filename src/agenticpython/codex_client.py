@@ -108,7 +108,8 @@ def _build_native_code_prompt(context: dict[str, Any]) -> str:
         "messages instead of raising when a value is absent. Prefer existing runtime objects such "
         "as optimizer.param_groups, lr, eval_every_epochs, logging, last_batch_summary, and "
         "batch_loss_trace when they exist. Do not import unavailable packages. Do not ask "
-        "questions. Include a short print() so the operator can see what changed or observed.\n\n"
+        "questions. Include a short print(..., flush=True) so the operator can see what changed "
+        "or observed immediately.\n\n"
         "Native runtime context JSON:\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2, default=repr)}"
     )

@@ -86,6 +86,7 @@ def build_native_env(
     env["PYTHON_AGENTIC_EVENTS"] = str(paths.events_path)
     env["PYTHON_AGENTIC_COMMANDS"] = str(paths.commands_path)
     env["PYTHON_AGENTIC_PAUSE_FILE"] = str(paths.pause_path)
+    env["PYTHONUNBUFFERED"] = "1"
     if script_path is not None:
         env["PYTHON_AGENTIC_FILTER"] = str(script_path.resolve())
     return env

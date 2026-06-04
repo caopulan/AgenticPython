@@ -3,7 +3,7 @@ import os
 import pytest
 
 from agenticpython.actions import ActionValidationError
-from agenticpython.codex_client import parse_native_code_response
+from agenticpython.codex_client import _build_native_code_prompt, parse_native_code_response
 
 
 def test_parse_native_code_response_extracts_code_json():
@@ -20,6 +20,12 @@ def test_parse_native_code_response_extracts_code_json():
 def test_parse_native_code_response_rejects_empty_code():
     with pytest.raises(ActionValidationError, match="non-empty code"):
         parse_native_code_response('{"code": ""}')
+
+
+def test_native_code_prompt_requires_flushed_prints():
+    prompt = _build_native_code_prompt({"user_instruction": "现在多少iter了"})
+
+    assert "print(..., flush=True)" in prompt
 
 
 @pytest.mark.skipif(

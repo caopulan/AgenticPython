@@ -43,6 +43,7 @@ def test_build_native_env_sets_cpython_probe_variables(tmp_path):
     assert env["PYTHON_AGENTIC_COMMANDS"] == str(paths.commands_path)
     assert env["PYTHON_AGENTIC_PAUSE_FILE"] == str(paths.pause_path)
     assert env["PYTHON_AGENTIC_FILTER"] == str(script_path)
+    assert env["PYTHONUNBUFFERED"] == "1"
     assert str(tmp_path / "src") in env["PYTHONPATH"]
     assert "existing" in env["PYTHONPATH"]
 
