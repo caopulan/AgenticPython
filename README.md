@@ -62,6 +62,10 @@ Commands:
   usable while the current instruction is running. Python and PyTorch execution
   is still cooperative: pause or instruction requests take effect after the
   current instruction, such as the current minibatch, finishes.
+- Log rows are labeled and colorized by source: user instructions, program
+  output, Codex triggers, patch summaries, agent state, and errors are visually
+  separated. Patch code is summarized in the TUI; the full patch is still stored
+  in `journal.jsonl`.
 
 For a real CPU MNIST training script, install the optional dependencies and run:
 

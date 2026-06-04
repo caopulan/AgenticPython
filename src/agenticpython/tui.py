@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections import deque
 import curses
+from dataclasses import dataclass
 from pathlib import Path
 import threading
+import textwrap
 import time
 from typing import Any
 
@@ -13,23 +15,73 @@ from .runtime import AgenticRunner
 from .triggers import TriggerRule
 
 
-_COLORS_READY = False
+_READY_COLOR_PAIRS: set[int] = set()
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    text: str
+    kind: str = "system"
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class RenderedLogLine:
+    text: str
+    kind: str
+
+
+_LABELS = {
+    "agent": "AGENT",
+    "error": "ERROR",
+    "patch": "PATCH",
+    "program": "OUT",
+    "system": "STATE",
+    "trace": "TRACE",
+    "trigger": "CODEX",
+    "user": "YOU",
+}
+
+_KIND_COLOR_PAIRS = {
+    "agent": 5,
+    "error": 8,
+    "patch": 7,
+    "program": 6,
+    "system": 2,
+    "trace": 3,
+    "trigger": 7,
+    "user": 5,
+}
 
 
 class TuiLog:
     def __init__(self, max_lines: int = 1000, log_level: str = "INFO") -> None:
-        self.lines: deque[str] = deque(maxlen=max_lines)
+        self.entries: deque[LogEntry] = deque(maxlen=max_lines)
         self.log_level = log_level.upper()
         self._lock = threading.RLock()
 
-    def append(self, line: str) -> None:
+    def append(self, line: str, kind: str = "system", label: str | None = None) -> None:
         with self._lock:
             for part in str(line).splitlines() or [""]:
-                self.lines.append(part)
+                self.entries.append(LogEntry(text=part, kind=kind, label=label))
 
-    def snapshot(self) -> list[str]:
+    def snapshot(self) -> list[LogEntry]:
         with self._lock:
-            return list(self.lines)
+            return list(self.entries)
+
+    def render_lines(self, width: int, max_lines: int) -> list[RenderedLogLine]:
+        label_width = 9
+        available = max(8, width - label_width - 1)
+        rendered: list[RenderedLogLine] = []
+        for entry in self.snapshot():
+            label = (entry.label or _LABELS.get(entry.kind, entry.kind.upper()))[:label_width].ljust(label_width)
+            prefix = f"{label} "
+            continuation = " " * len(prefix)
+            segments = _wrap_log_text(entry.text, available)
+            for index, segment in enumerate(segments):
+                line_prefix = prefix if index == 0 else continuation
+                rendered.append(RenderedLogLine(text=f"{line_prefix}{segment}"[:width], kind=entry.kind))
+        return rendered[-max_lines:]
 
     def event_sink(self, event: dict[str, Any]) -> None:
         event_name = event.get("event")
@@ -38,24 +90,49 @@ class TuiLog:
             status = event.get("status")
             source = instruction.get("source", "")
             if self.log_level == "DEBUG":
-                self.append(f"[{status}] {instruction.get('id', '?')}: {source}")
+                self.append(f"{status} {instruction.get('id', '?')}: {source}", kind="trace")
             if event.get("stdout"):
-                self.append(event["stdout"])
+                self.append(event["stdout"], kind="program")
             if event.get("traceback"):
-                self.append(event["traceback"].strip().splitlines()[-1])
+                self.append(event["traceback"].strip().splitlines()[-1], kind="error")
             return
         if event_name == "trigger":
-            self.append(f"[trigger:{event.get('trigger')}] paused for Codex")
+            self.append(f"{event.get('trigger')} context captured; waiting for Codex", kind="trigger")
             return
         if event_name == "patch":
             for operation in event.get("action", {}).get("operations", []):
-                self.append(
-                    "[patch] "
-                    f"{operation.get('op')} {operation.get('target')}: "
-                    f"{operation.get('code', '')}"
-                )
+                self.append(_operation_summary(operation), kind="patch")
             return
-        self.append(str(event))
+        self.append(str(event), kind="system")
+
+
+def _wrap_log_text(text: str, width: int) -> list[str]:
+    lines: list[str] = []
+    for physical_line in str(text).expandtabs(4).splitlines() or [""]:
+        wrapped = textwrap.wrap(
+            physical_line,
+            width=width,
+            break_long_words=True,
+            break_on_hyphens=False,
+            drop_whitespace=False,
+            replace_whitespace=False,
+        )
+        lines.extend(wrapped or [""])
+    return lines
+
+
+def _operation_summary(operation: dict[str, Any]) -> str:
+    op = operation.get("op", "?")
+    target = operation.get("target") or ""
+    code = operation.get("code") or ""
+    code_lines = [line.strip() for line in str(code).splitlines() if line.strip()]
+    if not code_lines:
+        return f"{op} {target}".strip()
+    preview = code_lines[0]
+    if len(preview) > 96:
+        preview = f"{preview[:93]}..."
+    line_count = f" ({len(code_lines)} lines)" if len(code_lines) > 1 else ""
+    return f"{op} {target}{line_count}: {preview}".strip()
 
 
 def run_tui(
@@ -92,7 +169,7 @@ def _curses_main(stdscr: Any, session: InteractiveSession, log: TuiLog, step_del
     stdscr.nodelay(True)
     stdscr.keypad(True)
     input_text = ""
-    log.append("Ready. Type /pause, /resume, /quit, or a natural-language instruction.")
+    log.append("Ready. Type /pause, /resume, /quit, or a natural-language instruction.", kind="system")
     ticker = BackgroundTicker(session, delay=step_delay)
     ticker.start()
 
@@ -132,7 +209,7 @@ def _handle_input(text: str, session: InteractiveSession, log: TuiLog) -> bool:
     normalized = text.strip().lower()
     if normalized in {"/quit", "/exit", ":q", "quit", "exit", "退出"}:
         result = session.stop()
-        log.append(f"stopped: artifacts at {result.out_dir}")
+        log.append(f"stopped: artifacts at {result.out_dir}", kind="system")
         return True
     if normalized in {"/pause", "pause", "暂停"}:
         session.pause()
@@ -143,13 +220,14 @@ def _handle_input(text: str, session: InteractiveSession, log: TuiLog) -> bool:
         _drain_session_messages(session, log)
         return False
     if normalized in {"/help", "help", "帮助"}:
-        log.append("Use /pause to stop auto-run, /resume or /start to continue, /quit to exit.")
-        log.append("Type any natural-language instruction to send current context to Codex; it stays paused afterward.")
+        log.append("Use /pause to stop auto-run, /resume or /start to continue, /quit to exit.", kind="system")
+        log.append(
+            "Type any natural-language instruction to send current context to Codex; it stays paused afterward.",
+            kind="system",
+        )
         return False
 
-    session.pause()
-    log.append(f"[user] {text}")
-    log.append("queued instruction for Codex...")
+    log.append(text, kind="user")
     session.queue_instruction(text)
     _drain_session_messages(session, log)
     return False
@@ -157,7 +235,16 @@ def _handle_input(text: str, session: InteractiveSession, log: TuiLog) -> bool:
 
 def _drain_session_messages(session: InteractiveSession, log: TuiLog) -> None:
     for message in session.drain_messages():
-        log.append(message)
+        log.append(message, kind=_session_message_kind(message))
+
+
+def _session_message_kind(message: str) -> str:
+    lowered = message.lower()
+    if "instruction applied" in lowered:
+        return "agent"
+    if "queued" in lowered:
+        return "trigger"
+    return "system"
 
 
 def _render(stdscr: Any, session: InteractiveSession, log: TuiLog, input_text: str) -> None:
@@ -165,9 +252,9 @@ def _render(stdscr: Any, session: InteractiveSession, log: TuiLog, input_text: s
     stdscr.erase()
     _draw_header(stdscr, session, log, width)
     log_height = max(1, height - 5)
-    visible = log.snapshot()[-log_height:]
+    visible = log.render_lines(width=max(1, width - 2), max_lines=log_height)
     for row, line in enumerate(visible):
-        stdscr.addnstr(row + 2, 1, line, max(0, width - 2))
+        stdscr.addnstr(row + 2, 1, line.text, max(0, width - 2), _entry_attr(line.kind))
 
     status = "paused" if session.paused else "running"
     if session.finished:
@@ -190,27 +277,44 @@ def _render(stdscr: Any, session: InteractiveSession, log: TuiLog, input_text: s
 
 
 def _init_colors() -> None:
-    global _COLORS_READY
+    global _READY_COLOR_PAIRS
+    _READY_COLOR_PAIRS = set()
     curses.start_color()
-    if not curses.has_colors() or curses.COLOR_PAIRS <= 4:
-        _COLORS_READY = False
+    color_pairs = getattr(curses, "COLOR_PAIRS", 0) or 0
+    if not curses.has_colors() or color_pairs <= 1:
         return
     background = -1
     try:
         curses.use_default_colors()
     except curses.error:
         background = curses.COLOR_BLACK
-    curses.init_pair(1, curses.COLOR_CYAN, background)
-    curses.init_pair(2, curses.COLOR_GREEN, background)
-    curses.init_pair(3, curses.COLOR_BLUE, background)
-    curses.init_pair(4, curses.COLOR_WHITE, background)
-    _COLORS_READY = True
+    for index, color in (
+        (1, curses.COLOR_CYAN),
+        (2, curses.COLOR_GREEN),
+        (3, curses.COLOR_BLUE),
+        (4, curses.COLOR_WHITE),
+        (5, curses.COLOR_MAGENTA),
+        (6, curses.COLOR_CYAN),
+        (7, curses.COLOR_YELLOW),
+        (8, curses.COLOR_RED),
+    ):
+        if index >= color_pairs:
+            continue
+        try:
+            curses.init_pair(index, color, background)
+        except curses.error:
+            continue
+        _READY_COLOR_PAIRS.add(index)
 
 
 def _color_pair(index: int) -> int:
-    if not _COLORS_READY:
+    if index not in _READY_COLOR_PAIRS:
         return 0
     return curses.color_pair(index)
+
+
+def _entry_attr(kind: str) -> int:
+    return _color_pair(_KIND_COLOR_PAIRS.get(kind, 4))
 
 
 def _draw_header(stdscr: Any, session: InteractiveSession, log: TuiLog, width: int) -> None:

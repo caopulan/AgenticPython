@@ -213,7 +213,9 @@ def test_tui_log_hides_instruction_trace_at_info_and_shows_stdout():
         }
     )
 
-    assert list(log.lines) == ["epoch=1 accuracy=0.8"]
+    rendered = log.render_lines(width=80, max_lines=10)
+
+    assert [line.text for line in rendered] == ["OUT       epoch=1 accuracy=0.8"]
 
 
 def test_tui_log_shows_instruction_trace_at_debug():
@@ -228,4 +230,46 @@ def test_tui_log_shows_instruction_trace_at_debug():
         }
     )
 
-    assert list(log.lines) == ["[ok] I0001: x = 1"]
+    rendered = log.render_lines(width=80, max_lines=10)
+
+    assert [line.text for line in rendered] == ["TRACE     ok I0001: x = 1"]
+
+
+def test_tui_log_collapses_patch_code_and_wraps_to_width():
+    log = TuiLog(log_level="INFO")
+
+    log.event_sink(
+        {
+            "event": "patch",
+            "action": {
+                "operations": [
+                    {
+                        "op": "insert_before",
+                        "target": "__current__",
+                        "code": (
+                            'if "batch_loss_trace" not in globals():\n'
+                            "    batch_loss_trace = []\n"
+                            "batch_loss_trace.append((int(epoch), int(batch_index), float(loss_value)))"
+                        ),
+                    }
+                ]
+            },
+        }
+    )
+
+    rendered = log.render_lines(width=56, max_lines=10)
+
+    assert rendered[0].text.startswith("PATCH     insert_before __current__ (3 lines):")
+    assert all(len(line.text) <= 56 for line in rendered)
+    assert not any("batch_loss_trace = []" in line.text for line in rendered)
+
+
+def test_tui_log_renders_user_messages_with_label_and_color_kind():
+    log = TuiLog(log_level="INFO")
+
+    log.append("学习率调整为现在的5倍吧", kind="user")
+
+    rendered = log.render_lines(width=80, max_lines=10)
+
+    assert rendered[0].text == "YOU       学习率调整为现在的5倍吧"
+    assert rendered[0].kind == "user"
