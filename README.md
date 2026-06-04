@@ -86,7 +86,9 @@ agentpython tui examples/cpu_mnist.py --out-dir .agentpython-runs/mnist
 split with `batch_size = 64` for `num_epochs = 3` and evaluates the full test
 split every `eval_every_epochs = 1`. The top-level tape advances one minibatch
 at a time, reports periodic batch progress, and reports evaluation accuracy
-after each epoch.
+after each epoch. It also keeps `batch_loss_trace` and `last_batch_summary` in
+the script namespace so `/btw` questions can inspect recent training state
+without patching the tape.
 
 Example live instruction:
 
