@@ -3,7 +3,7 @@ import time
 from agenticpython.actions import ScriptedActionClient
 from agenticpython.interactive import BackgroundTicker, InteractiveSession
 from agenticpython.runtime import AgenticRunner
-from agenticpython.tui import TuiLog, _display_width, _prompt_view
+from agenticpython.tui import TuiLog, _KIND_COLOR_PAIRS, _display_width, _prompt_view
 
 
 def test_user_instruction_pauses_applies_patch_and_waits_for_resume(tmp_path):
@@ -266,6 +266,11 @@ def test_tui_log_shows_instruction_trace_at_debug():
     rendered = log.render_lines(width=80, max_lines=10)
 
     assert [line.text for line in rendered] == ["TRACE     ok I0001: x = 1"]
+
+
+def test_tui_color_mapping_uses_blue_for_codex_and_black_for_trace():
+    assert _KIND_COLOR_PAIRS["trigger"] == 3
+    assert _KIND_COLOR_PAIRS["trace"] == 9
 
 
 def test_tui_log_collapses_patch_code_and_wraps_to_width():

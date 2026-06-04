@@ -48,8 +48,8 @@ _KIND_COLOR_PAIRS = {
     "patch": 7,
     "program": 6,
     "system": 2,
-    "trace": 3,
-    "trigger": 7,
+    "trace": 9,
+    "trigger": 3,
     "user": 5,
 }
 
@@ -332,9 +332,9 @@ def _render(stdscr: Any, session: InteractiveSession, log: TuiLog, input_text: s
     if session.finished:
         status = "finished"
     divider = "─" * max(0, width - 1)
-    stdscr.attron(_color_pair(3))
+    stdscr.attron(_color_pair(9))
     stdscr.addnstr(height - 3, 0, divider, max(0, width - 1))
-    stdscr.attroff(_color_pair(3))
+    stdscr.attroff(_color_pair(9))
     stdscr.addnstr(
         height - 2,
         0,
@@ -369,6 +369,7 @@ def _init_colors() -> None:
         (6, curses.COLOR_CYAN),
         (7, curses.COLOR_YELLOW),
         (8, curses.COLOR_RED),
+        (9, curses.COLOR_BLACK),
     ):
         if index >= color_pairs:
             continue
@@ -396,4 +397,4 @@ def _draw_header(stdscr: Any, session: InteractiveSession, log: TuiLog, width: i
     title = f" AgenticPython  {status.upper()}  LOG={log.log_level} "
     stdscr.addnstr(0, 0, title.ljust(max(0, width - 1)), max(0, width - 1), _color_pair(1))
     subtitle = " Program log appears below. Natural language instructions pause and call Codex. "
-    stdscr.addnstr(1, 0, subtitle.ljust(max(0, width - 1)), max(0, width - 1), _color_pair(3))
+    stdscr.addnstr(1, 0, subtitle.ljust(max(0, width - 1)), max(0, width - 1), _color_pair(9))

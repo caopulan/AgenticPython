@@ -64,8 +64,9 @@ Commands:
   current instruction, such as the current minibatch, finishes.
 - Log rows are labeled and colorized by source: user instructions, program
   output, Codex triggers, patch summaries, agent state, and errors are visually
-  separated. Patch code is summarized in the TUI; the full patch is still stored
-  in `journal.jsonl`.
+  separated. Codex trigger rows use blue, while low-priority trace/divider text
+  uses black. Patch code is summarized in the TUI; the full patch is still
+  stored in `journal.jsonl`.
 - Output produced by Codex `execute_now` patches is captured and shown as
   `AGENT` log rows instead of writing directly into the terminal.
 - Wide characters such as Chinese text are wrapped and clipped by terminal cell
