@@ -3,6 +3,8 @@
 __pycache__/
 *.py[cod]
 .agentpython-runs/
+.agentpython-build
+.agentpython-build/
 data/
 dist/
 *.egg-info/
