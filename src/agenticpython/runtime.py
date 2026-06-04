@@ -37,6 +37,25 @@ class _LoopFrame:
     active: bool = False
 
 
+class _CaptureProxy:
+    def __init__(self, fallback: Any) -> None:
+        self.fallback = fallback
+        self.buffer: io.StringIO | None = None
+
+    def write(self, text: str) -> int:
+        if self.buffer is not None:
+            return self.buffer.write(text)
+        return self.fallback.write(text)
+
+    def flush(self) -> None:
+        if self.buffer is not None:
+            return
+        self.fallback.flush()
+
+    def isatty(self) -> bool:
+        return False
+
+
 class AgenticRunner:
     def __init__(
         self,
@@ -58,6 +77,8 @@ class AgenticRunner:
         self._current_error: str | None = None
         self.echo_stdout = echo_stdout
         self.event_sink = event_sink
+        self._stdout_proxy = _CaptureProxy(sys.stdout)
+        self._stderr_proxy = _CaptureProxy(sys.stderr)
 
     @classmethod
     def from_path(
@@ -179,12 +200,18 @@ class AgenticRunner:
 
     def _execute_instruction(self, instruction: Instruction) -> str:
         stream = io.StringIO()
-        with contextlib.redirect_stdout(stream):
-            exec(
-                compile(instruction.source, f"<agentpython:{instruction.id}>", "exec"),
-                self.namespace,
-                self.namespace,
-            )
+        self._stdout_proxy.buffer = stream
+        self._stderr_proxy.buffer = stream
+        try:
+            with contextlib.redirect_stdout(self._stdout_proxy), contextlib.redirect_stderr(self._stderr_proxy):
+                exec(
+                    compile(instruction.source, f"<agentpython:{instruction.id}>", "exec"),
+                    self.namespace,
+                    self.namespace,
+                )
+        finally:
+            self._stdout_proxy.buffer = None
+            self._stderr_proxy.buffer = None
         stdout = stream.getvalue()
         if stdout and self.echo_stdout:
             sys.stdout.write(stdout)

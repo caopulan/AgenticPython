@@ -1,6 +1,7 @@
 from agenticpython.actions import ScriptedActionClient
 from agenticpython.interactive import InteractiveSession
 from agenticpython.runtime import AgenticRunner
+from agenticpython.tui import TuiLog
 
 
 def test_user_instruction_pauses_applies_patch_and_waits_for_resume(tmp_path):
@@ -70,6 +71,29 @@ def test_runner_can_send_stdout_to_event_sink_without_echoing(tmp_path):
     assert any(event.get("stdout") == "hello tui\n" for event in events)
 
 
+def test_runner_captures_logging_configured_in_earlier_instruction(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text(
+        "import logging\n"
+        "import sys\n"
+        "logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(message)s', force=True)\n"
+        "logging.info('hello logging')\n",
+        encoding="utf-8",
+    )
+    events = []
+    runner = AgenticRunner.from_path(
+        script,
+        decision_client=ScriptedActionClient({}),
+        out_dir=tmp_path / "run",
+        echo_stdout=False,
+        event_sink=events.append,
+    )
+
+    runner.run()
+
+    assert any(event.get("stdout") == "hello logging\n" for event in events)
+
+
 def test_stop_before_first_tick_still_writes_artifacts(tmp_path):
     script = tmp_path / "demo.py"
     script.write_text("x = 1\n", encoding="utf-8")
@@ -84,3 +108,33 @@ def test_stop_before_first_tick_still_writes_artifacts(tmp_path):
 
     assert (tmp_path / "run" / "final_tape.json").exists()
     assert (tmp_path / "run" / "replay.py").exists()
+
+
+def test_tui_log_hides_instruction_trace_at_info_and_shows_stdout():
+    log = TuiLog(log_level="INFO")
+
+    log.event_sink(
+        {
+            "event": "execute",
+            "instruction": {"id": "I0001", "source": "x = 1"},
+            "status": "ok",
+            "stdout": "epoch=1 accuracy=0.8\n",
+        }
+    )
+
+    assert list(log.lines) == ["epoch=1 accuracy=0.8"]
+
+
+def test_tui_log_shows_instruction_trace_at_debug():
+    log = TuiLog(log_level="DEBUG")
+
+    log.event_sink(
+        {
+            "event": "execute",
+            "instruction": {"id": "I0001", "source": "x = 1"},
+            "status": "ok",
+            "stdout": "",
+        }
+    )
+
+    assert list(log.lines) == ["[ok] I0001: x = 1"]

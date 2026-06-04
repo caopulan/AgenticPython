@@ -1,4 +1,5 @@
-from itertools import cycle
+import logging
+import sys
 
 import torch
 from torch import nn
@@ -6,11 +7,19 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+    force=True,
+)
+
 torch.manual_seed(0)
 device = torch.device("cpu")
 batch_size = 64
-total_steps = 30
-eval_every = 10
+num_epochs = 3
+eval_every_epochs = 1
 lr = 0.1
 history = []
 evals = []
@@ -25,7 +34,6 @@ train_dataset = datasets.MNIST("data", train=True, download=True, transform=tran
 test_dataset = datasets.MNIST("data", train=False, download=True, transform=transform)
 train_loader = DataLoader(Subset(train_dataset, range(2048)), batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(Subset(test_dataset, range(512)), batch_size=128)
-train_iter = cycle(train_loader)
 
 model = nn.Sequential(
     nn.Flatten(),
@@ -37,19 +45,35 @@ optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 criterion = nn.CrossEntropyLoss()
 
 
-def train_one_step():
-    images, labels = next(train_iter)
-    images = images.to(device)
-    labels = labels.to(device)
-    optimizer.zero_grad()
-    logits = model(images)
-    loss = criterion(logits, labels)
-    loss.backward()
-    optimizer.step()
-    return float(loss.detach())
+def train_one_epoch(epoch):
+    model.train()
+    total_loss = 0.0
+    total_examples = 0
+    for images, labels in train_loader:
+        images = images.to(device)
+        labels = labels.to(device)
+        optimizer.zero_grad()
+        logits = model(images)
+        loss = criterion(logits, labels)
+        loss.backward()
+        optimizer.step()
+        batch_size_seen = int(labels.numel())
+        total_loss += float(loss.detach()) * batch_size_seen
+        total_examples += batch_size_seen
+    average_loss = total_loss / total_examples
+    current_lr = optimizer.param_groups[0]["lr"]
+    history.append((epoch, round(average_loss, 4), current_lr))
+    logging.info(
+        "epoch=%s/%s train_loss=%.4f lr=%.5f",
+        epoch,
+        num_epochs,
+        average_loss,
+        current_lr,
+    )
+    return average_loss
 
 
-def evaluate():
+def evaluate(epoch):
     model.eval()
     correct = 0
     total = 0
@@ -60,18 +84,27 @@ def evaluate():
             predictions = model(images).argmax(dim=1)
             correct += int((predictions == labels).sum())
             total += int(labels.numel())
-    model.train()
-    return correct / total
+    accuracy = correct / total
+    evals.append((epoch, round(accuracy, 4)))
+    logging.info("epoch=%s evaluation accuracy=%.4f", epoch, accuracy)
+    return accuracy
 
 
-for step in range(total_steps):
-    loss = train_one_step()
-    current_lr = optimizer.param_groups[0]["lr"]
-    history.append((step, round(loss, 4), current_lr))
-    if step % eval_every == 0:
-        accuracy = evaluate()
-        evals.append((step, round(accuracy, 4)))
-    print(f"step={step} loss={loss:.4f} lr={current_lr:.5f}")
+def maybe_evaluate(epoch):
+    if epoch % eval_every_epochs == 0:
+        return evaluate(epoch)
+    return None
 
-print("history", history)
-print("evals", evals)
+
+logging.info(
+    "starting CPU MNIST training epochs=%s eval_every_epochs=%s train_examples=%s test_examples=%s",
+    num_epochs,
+    eval_every_epochs,
+    len(train_loader.dataset),
+    len(test_loader.dataset),
+)
+for epoch in range(1, num_epochs + 1):
+    train_one_epoch(epoch)
+    maybe_evaluate(epoch)
+
+logging.info("training complete history=%s evals=%s", history, evals)

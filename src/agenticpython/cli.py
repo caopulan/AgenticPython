@@ -32,6 +32,7 @@ def main() -> None:
     tui_parser.add_argument("--out-dir")
     tui_parser.add_argument("--model")
     tui_parser.add_argument("--step-delay", type=float, default=0.05)
+    tui_parser.add_argument("--log-level", choices=["INFO", "DEBUG"], default="INFO")
 
     args = parser.parse_args()
     if args.command == "run":
@@ -86,6 +87,7 @@ def _tui(args: argparse.Namespace) -> None:
         out_dir=Path(args.out_dir) if args.out_dir else _default_out_dir(script_path),
         model=args.model,
         step_delay=args.step_delay,
+        log_level=args.log_level,
     )
 
 

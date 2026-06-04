@@ -56,6 +56,8 @@ Commands:
 - `/quit` exits and writes artifacts.
 - Any other text is sent to Codex as an instruction. The runtime applies the
   returned patch and stays paused until `/resume`.
+- Default TUI logging is `INFO`, which shows normal program output. Use
+  `--log-level DEBUG` to also show each executed tape instruction.
 
 For a real CPU MNIST training script, install the optional dependencies and run:
 
@@ -63,6 +65,9 @@ For a real CPU MNIST training script, install the optional dependencies and run:
 .venv/bin/python -m pip install -e '.[mnist]'
 agentpython tui examples/cpu_mnist.py --out-dir .agentpython-runs/mnist
 ```
+
+`examples/cpu_mnist.py` trains on CPU for `num_epochs = 3` and evaluates every
+`eval_every_epochs = 1`, reporting evaluation accuracy after each epoch.
 
 Example live instruction:
 

@@ -13,8 +13,9 @@ from .triggers import TriggerRule
 
 
 class TuiLog:
-    def __init__(self, max_lines: int = 1000) -> None:
+    def __init__(self, max_lines: int = 1000, log_level: str = "INFO") -> None:
         self.lines: deque[str] = deque(maxlen=max_lines)
+        self.log_level = log_level.upper()
 
     def append(self, line: str) -> None:
         for part in str(line).splitlines() or [""]:
@@ -26,7 +27,8 @@ class TuiLog:
             instruction = event.get("instruction", {})
             status = event.get("status")
             source = instruction.get("source", "")
-            self.append(f"[{status}] {instruction.get('id', '?')}: {source}")
+            if self.log_level == "DEBUG":
+                self.append(f"[{status}] {instruction.get('id', '?')}: {source}")
             if event.get("stdout"):
                 self.append(event["stdout"])
             if event.get("traceback"):
@@ -52,8 +54,9 @@ def run_tui(
     out_dir: Path,
     model: str | None = None,
     step_delay: float = 0.05,
+    log_level: str = "INFO",
 ) -> None:
-    log = TuiLog()
+    log = TuiLog(log_level=log_level)
     client = CodexSdkDecisionClient(model=model)
     try:
         runner = AgenticRunner.from_path(
@@ -71,12 +74,12 @@ def run_tui(
 
 
 def _curses_main(stdscr: Any, session: InteractiveSession, log: TuiLog, step_delay: float) -> None:
+    _init_colors()
     curses.curs_set(1)
     stdscr.nodelay(True)
     stdscr.keypad(True)
     input_text = ""
-    log.append("AgenticPython TUI")
-    log.append("Commands: /pause, /resume, /start, /quit, /help. Any other text is sent to Codex and pauses.")
+    log.append("Ready. Type /pause, /resume, /quit, or a natural-language instruction.")
 
     while True:
         _drain_session_messages(session, log)
@@ -144,22 +147,46 @@ def _drain_session_messages(session: InteractiveSession, log: TuiLog) -> None:
 def _render(stdscr: Any, session: InteractiveSession, log: TuiLog, input_text: str) -> None:
     height, width = stdscr.getmaxyx()
     stdscr.erase()
-    log_height = max(1, height - 3)
+    _draw_header(stdscr, session, log, width)
+    log_height = max(1, height - 5)
     visible = list(log.lines)[-log_height:]
     for row, line in enumerate(visible):
-        stdscr.addnstr(row, 0, line, max(0, width - 1))
+        stdscr.addnstr(row + 2, 1, line, max(0, width - 2))
 
     status = "paused" if session.paused else "running"
     if session.finished:
         status = "finished"
-    divider = "-" * max(0, width - 1)
+    divider = "─" * max(0, width - 1)
+    stdscr.attron(curses.color_pair(3))
     stdscr.addnstr(height - 3, 0, divider, max(0, width - 1))
+    stdscr.attroff(curses.color_pair(3))
     stdscr.addnstr(
         height - 2,
         0,
-        f"status={status} | out={session.runner.out_dir}",
+        f" {status.upper()}  out={session.runner.out_dir}  commands=/pause /resume /quit",
         max(0, width - 1),
+        curses.color_pair(2),
     )
-    stdscr.addnstr(height - 1, 0, f"> {input_text}", max(0, width - 1))
+    prompt = "› "
+    stdscr.addnstr(height - 1, 0, prompt + input_text, max(0, width - 1), curses.color_pair(4))
     stdscr.move(height - 1, min(width - 1, len(input_text) + 2))
     stdscr.refresh()
+
+
+def _init_colors() -> None:
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_CYAN, -1)
+    curses.init_pair(2, curses.COLOR_GREEN, -1)
+    curses.init_pair(3, curses.COLOR_BLUE, -1)
+    curses.init_pair(4, curses.COLOR_WHITE, -1)
+
+
+def _draw_header(stdscr: Any, session: InteractiveSession, log: TuiLog, width: int) -> None:
+    status = "paused" if session.paused else "running"
+    if session.finished:
+        status = "finished"
+    title = f" AgenticPython  {status.upper()}  LOG={log.log_level} "
+    stdscr.addnstr(0, 0, title.ljust(max(0, width - 1)), max(0, width - 1), curses.color_pair(1))
+    subtitle = " Program log appears below. Natural language instructions pause and call Codex. "
+    stdscr.addnstr(1, 0, subtitle.ljust(max(0, width - 1)), max(0, width - 1), curses.color_pair(3))
