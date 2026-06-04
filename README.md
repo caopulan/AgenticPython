@@ -167,8 +167,11 @@ Useful native TUI commands:
 - `/exec <python code>` queues Python code to execute in the current CPython
   frame context, then stays paused until `/resume`.
 - `/btw <message>` asks Codex a side question without pausing.
-- Any other text pauses, asks Codex for Python code, queues that code, and
-  waits for `/resume`.
+- Natural-language runtime controls are parsed locally. For example,
+  `我要在 optim 里停` adds `torch.optim` to the trace scope, breaks on optimizer
+  Python calls, and continues until that breakpoint is hit.
+- Other natural-language text pauses, asks Codex for Python code, queues that
+  code, and waits for `/resume`.
 - `/quit` exits the process.
 
 The trace scope is matched against Python frame filenames. CPython can stop at
@@ -182,6 +185,31 @@ Example: step from the training script into PyTorch's Python optimizer layer:
 /pause
 /trace package torch.optim
 /step
+```
+
+The same optimizer stop can be requested naturally:
+
+```text
+我要在 optim 里停
+```
+
+For line-level stops inside the Python part of the optimizer:
+
+```text
+我想在 optimizer 每一行停住
+```
+
+To trace every Python frame instead of only the training script and selected
+packages:
+
+```text
+在任意 python 代码每一行都停
+```
+
+To turn automatic break stops off and keep running:
+
+```text
+optim 里不要停了
 ```
 
 Example direct intervention:

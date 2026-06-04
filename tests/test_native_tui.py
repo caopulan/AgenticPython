@@ -5,6 +5,8 @@ import pytest
 
 from agenticpython.native.protocol import FrameEvent
 from agenticpython.native.tui import (
+    _handle_native_input,
+    _parse_natural_language_control,
     _resolve_package_filter,
     _script_symbols,
     _source_windows,
@@ -72,6 +74,68 @@ def test_resolve_package_filter_returns_package_directory():
 
     assert resolved is not None
     assert resolved.endswith("torch/optim")
+
+
+def test_parse_natural_language_control_stops_in_optimizer_calls():
+    request = _parse_natural_language_control("我要在 optim 里停")
+
+    assert request is not None
+    assert request.trace_package == "torch.optim"
+    assert request.break_mode == "call"
+    assert request.resume is True
+
+
+def test_parse_natural_language_control_stops_on_optimizer_lines():
+    request = _parse_natural_language_control("我想在 optimizer 每一行停住")
+
+    assert request is not None
+    assert request.trace_package == "torch.optim"
+    assert request.break_mode == "line"
+    assert request.resume is True
+
+
+def test_parse_natural_language_control_can_trace_all_python_lines():
+    request = _parse_natural_language_control("在任意 python 代码每一行都停")
+
+    assert request is not None
+    assert request.trace_all is True
+    assert request.break_mode == "line"
+    assert request.resume is True
+
+
+def test_parse_natural_language_control_ignores_regular_questions():
+    assert _parse_natural_language_control("现在多少iter了") is None
+
+
+def test_parse_natural_language_control_can_turn_breaks_off():
+    request = _parse_natural_language_control("optim 里不要停了")
+
+    assert request is not None
+    assert request.break_mode == "off"
+    assert request.resume is True
+
+
+def test_handle_native_input_applies_natural_language_optimizer_break(tmp_path):
+    log = TuiLog()
+    session = NativeProcessSession(
+        script_path=Path("examples/native_cpu_mnist.py"),
+        out_dir=tmp_path / "run",
+        native_python=tmp_path / "python",
+        repo_root=Path.cwd(),
+        log=log,
+    )
+    session.paths.out_dir.mkdir(parents=True, exist_ok=True)
+    session.paths.commands_path.write_text("", encoding="utf-8")
+
+    should_quit = _handle_native_input("我要在 optim 里停", session, log)
+
+    command_lines = session.paths.commands_path.read_text(encoding="utf-8").splitlines()
+    assert should_quit is False
+    assert any(line.startswith("add_filter\t") and line.endswith("torch/optim") for line in command_lines)
+    assert "set_break_mode\tcall" in command_lines
+    assert "set_step_mode\tnone" in command_lines
+    assert "resume" in command_lines
+    assert any(entry.text == "natural-language runtime control applied" for entry in log.snapshot())
 
 
 def test_resolve_native_python_uses_requested_path(tmp_path):

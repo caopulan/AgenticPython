@@ -37,6 +37,16 @@ class NativeRunPaths:
     command_dir: Path
 
 
+@dataclass(frozen=True)
+class NaturalLanguageControlRequest:
+    trace_package: str | None = None
+    trace_all: bool = False
+    trace_script: bool = False
+    break_mode: str | None = None
+    step_mode: str | None = None
+    resume: bool = False
+
+
 def make_native_run_paths(out_dir: Path) -> NativeRunPaths:
     return NativeRunPaths(
         out_dir=out_dir,
@@ -533,13 +543,19 @@ def _handle_native_input(text: str, session: NativeProcessSession, log: TuiLog) 
         session.log_line("Use /exec <python code> for direct CPython-frame execution.", kind="system")
         session.log_line("Use /trace script|all|package <name>|path <path>|show to control trace scope.", kind="system")
         session.log_line("Use /break off|line|call|return|exception|all and /step /next /out /continue to control depth.", kind="system")
-        session.log_line("Natural-language text pauses, asks Codex for Python code, queues it, and waits for /resume.", kind="system")
+        session.log_line("Natural-language controls such as '我要在 optim 里停' adjust trace/break state locally.", kind="system")
+        session.log_line("Other natural-language text pauses, asks Codex for Python code, queues it, and waits for /resume.", kind="system")
         return False
     if normalized == "/trace" or normalized.startswith("/trace "):
         _handle_trace_command(text, session)
         return False
     if normalized == "/break" or normalized.startswith("/break "):
         _handle_break_command(text, session)
+        return False
+    natural_control = _parse_natural_language_control(text)
+    if natural_control is not None:
+        session.log_line(text, kind="user", event="user_input")
+        _apply_natural_language_control(natural_control, session)
         return False
     if normalized == "/btw" or normalized.startswith("/btw "):
         question = text[4:].strip()
@@ -611,6 +627,80 @@ def _handle_break_command(text: str, session: NativeProcessSession) -> None:
         session.log_line("Usage: /break off|line|call|return|exception|all", kind="system")
         return
     session.set_break_mode(parts[1].strip().lower())
+
+
+def _parse_natural_language_control(text: str) -> NaturalLanguageControlRequest | None:
+    normalized = text.strip().lower().replace(" ", "")
+    if not normalized:
+        return None
+
+    mentions_python_all = (
+        "任意python" in normalized
+        or "所有python" in normalized
+        or "全部python" in normalized
+        or "allpython" in normalized
+        or "任何python" in normalized
+    )
+    mentions_optimizer = (
+        "torch.optim" in normalized
+        or "optimizer" in normalized
+        or "optim" in normalized
+        or "优化器" in normalized
+    )
+
+    wants_break_off = any(keyword in normalized for keyword in ["不停了", "别停", "不要停", "不用停", "关闭break"])
+    wants_stop = any(keyword in normalized for keyword in ["停", "断", "break", "stop"])
+    wants_step = any(keyword in normalized for keyword in ["step", "单步", "一步", "踩进去"])
+    wants_continue = any(keyword in normalized for keyword in ["继续", "resume", "continue"])
+
+    if wants_break_off:
+        return NaturalLanguageControlRequest(break_mode="off", resume=True)
+    if wants_continue and not wants_stop and not wants_step:
+        return NaturalLanguageControlRequest(break_mode="off", resume=True)
+    if not wants_stop and not wants_step:
+        return None
+    if not mentions_optimizer and not mentions_python_all:
+        return None
+
+    break_mode = "call"
+    if any(keyword in normalized for keyword in ["每一行", "每行", "逐行", "line", "行级"]):
+        break_mode = "line"
+    elif any(keyword in normalized for keyword in ["异常", "exception"]):
+        break_mode = "exception"
+    elif any(keyword in normalized for keyword in ["返回", "return"]):
+        break_mode = "return"
+    elif any(keyword in normalized for keyword in ["所有事件", "all"]):
+        break_mode = "all"
+
+    step_mode = "into" if wants_step and "next" not in normalized else None
+    return NaturalLanguageControlRequest(
+        trace_package="torch.optim" if mentions_optimizer else None,
+        trace_all=mentions_python_all,
+        break_mode=break_mode,
+        step_mode=step_mode,
+        resume=True,
+    )
+
+
+def _apply_natural_language_control(request: NaturalLanguageControlRequest, session: NativeProcessSession) -> None:
+    if request.trace_all:
+        session.set_trace_filters([], source="natural language")
+    if request.trace_script:
+        session.set_trace_filters([str(session.script_path)], source="natural language")
+    if request.trace_package is not None:
+        resolved = _resolve_package_filter(request.trace_package)
+        if resolved is None:
+            session.log_line(f"could not resolve package: {request.trace_package}", kind="error")
+            return
+        session.add_trace_filter(resolved, source=f"natural language package {request.trace_package}")
+    if request.break_mode is not None:
+        session.set_break_mode(request.break_mode)
+    if request.step_mode is not None:
+        session.step(request.step_mode)
+        return
+    if request.resume:
+        session.continue_execution()
+    session.log_line("natural-language runtime control applied", kind="agent", event="natural_control_applied")
 
 
 def _render_native(stdscr: Any, session: NativeProcessSession, log: TuiLog, input_text: str) -> None:

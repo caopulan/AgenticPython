@@ -64,9 +64,10 @@ Run the native MNIST TUI from the repository root:
 
 Inside the TUI, `/exec <python code>` appends an `exec_file` command. CPython
 executes that file in the current frame globals and locals at the next matching
-trace safepoint. Natural-language input pauses the process, asks Codex SDK for
-native Python code, queues it through the same command file, and waits for
-`/resume`.
+trace safepoint. Natural-language runtime controls such as `我要在 optim 里停`
+are parsed locally into trace/break/resume commands. Other natural-language
+input pauses the process, asks Codex SDK for native Python code, queues it
+through the same command file, and waits for `/resume`.
 
 Each native TUI run writes:
 
@@ -97,6 +98,15 @@ The TUI exposes these as slash commands:
 /next
 /out
 /continue
+```
+
+The same controls can be requested in Chinese natural language:
+
+```text
+我要在 optim 里停
+我想在 optimizer 每一行停住
+在任意 python 代码每一行都停
+optim 里不要停了
 ```
 
 These controls operate at Python frame trace-event level. They can enter Python
