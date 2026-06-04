@@ -4,7 +4,7 @@ import sys
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torchvision import datasets, models, transforms
 
 
 logging.basicConfig(
@@ -26,6 +26,7 @@ evals = []
 
 transform = transforms.Compose(
     [
+        transforms.Resize((32, 32)),
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,)),
     ]
@@ -35,12 +36,11 @@ test_dataset = datasets.MNIST("data", train=False, download=True, transform=tran
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=128)
 
-model = nn.Sequential(
-    nn.Flatten(),
-    nn.Linear(28 * 28, 128),
-    nn.ReLU(),
-    nn.Linear(128, 10),
-).to(device)
+model = models.vgg16(weights=None)
+model.features[0] = nn.Conv2d(1, 64, kernel_size=3, padding=1)
+model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+model.classifier = nn.Sequential(nn.Linear(512, 10))
+model = model.to(device)
 optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 criterion = nn.CrossEntropyLoss()
 
