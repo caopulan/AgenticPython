@@ -66,8 +66,9 @@ For a real CPU MNIST training script, install the optional dependencies and run:
 agentpython tui examples/cpu_mnist.py --out-dir .agentpython-runs/mnist
 ```
 
-`examples/cpu_mnist.py` trains on CPU for `num_epochs = 3` and evaluates every
-`eval_every_epochs = 1`, reporting evaluation accuracy after each epoch.
+`examples/cpu_mnist.py` trains the full MNIST training split on CPU for
+`num_epochs = 3` and evaluates the full test split every `eval_every_epochs = 1`,
+reporting evaluation accuracy after each epoch.
 
 Example live instruction:
 

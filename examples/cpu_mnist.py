@@ -3,7 +3,7 @@ import sys
 
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 
@@ -32,8 +32,8 @@ transform = transforms.Compose(
 )
 train_dataset = datasets.MNIST("data", train=True, download=True, transform=transform)
 test_dataset = datasets.MNIST("data", train=False, download=True, transform=transform)
-train_loader = DataLoader(Subset(train_dataset, range(2048)), batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(Subset(test_dataset, range(512)), batch_size=128)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=128)
 
 model = nn.Sequential(
     nn.Flatten(),
