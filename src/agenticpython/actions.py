@@ -35,13 +35,22 @@ class DecisionClient(Protocol):
     def decide(self, context: dict[str, Any]) -> AgentAction:
         ...
 
+    def ask_btw(self, context: dict[str, Any]) -> str:
+        ...
+
 
 class ScriptedActionClient:
     """Deterministic action fixture for tests and local runtime validation."""
 
-    def __init__(self, actions_by_trigger: dict[str, dict[str, Any] | str]) -> None:
+    def __init__(
+        self,
+        actions_by_trigger: dict[str, dict[str, Any] | str],
+        btw_responses: list[str] | None = None,
+    ) -> None:
         self.actions_by_trigger = actions_by_trigger
+        self.btw_responses = list(btw_responses or [])
         self.calls: list[dict[str, Any]] = []
+        self.btw_calls: list[dict[str, Any]] = []
 
     def decide(self, context: dict[str, Any]) -> AgentAction:
         self.calls.append(context)
@@ -49,6 +58,12 @@ class ScriptedActionClient:
         if isinstance(raw_action, str):
             return parse_action_response(raw_action)
         return _action_from_object(raw_action)
+
+    def ask_btw(self, context: dict[str, Any]) -> str:
+        self.btw_calls.append(context)
+        if self.btw_responses:
+            return self.btw_responses.pop(0)
+        return "No scripted /btw response configured."
 
 
 def parse_action_response(response_text: str) -> AgentAction:

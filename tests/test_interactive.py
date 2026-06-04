@@ -3,7 +3,7 @@ import time
 from agenticpython.actions import ScriptedActionClient
 from agenticpython.interactive import BackgroundTicker, InteractiveSession
 from agenticpython.runtime import AgenticRunner
-from agenticpython.tui import TuiLog, _KIND_COLOR_PAIRS, _display_width, _prompt_view
+from agenticpython.tui import TuiLog, _KIND_COLOR_PAIRS, _display_width, _handle_input, _prompt_view
 
 
 def test_user_instruction_pauses_applies_patch_and_waits_for_resume(tmp_path):
@@ -143,6 +143,69 @@ def test_queued_instruction_is_applied_by_background_ticker(tmp_path):
 
     assert client.calls[0]["current_instruction"]["source"] == "x = 1"
     assert session.paused is True
+
+
+def test_btw_question_does_not_pause_or_patch_runtime(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    client = ScriptedActionClient({}, btw_responses=["loss is still noisy"])
+    runner = AgenticRunner.from_path(script, decision_client=client, out_dir=tmp_path / "run")
+    session = InteractiveSession(runner)
+
+    session.submit_btw("how is the loss?", visible_log=["OUT epoch=1 batch=10 loss=2.3"])
+    session.wait_for_btw(timeout=1)
+
+    assert session.paused is False
+    assert runner.namespace.get("x") is None
+    assert client.calls == []
+    assert client.btw_calls[0]["question"] == "how is the loss?"
+    assert client.btw_calls[0]["visible_log"] == ["OUT epoch=1 batch=10 loss=2.3"]
+    assert "btw answer: loss is still noisy" in session.drain_messages()
+
+
+def test_btw_question_can_run_while_current_instruction_is_busy(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("import time\ntime.sleep(0.2)\nx = 1\n", encoding="utf-8")
+    client = ScriptedActionClient({}, btw_responses=["training continues"])
+    runner = AgenticRunner.from_path(script, decision_client=client, out_dir=tmp_path / "run")
+    session = InteractiveSession(runner)
+    ticker = BackgroundTicker(session, delay=0.001)
+
+    ticker.start()
+    time.sleep(0.03)
+    started_at = time.perf_counter()
+    session.submit_btw("are you alive?")
+    elapsed = time.perf_counter() - started_at
+    session.wait_for_btw(timeout=1)
+    ticker.stop()
+
+    assert elapsed < 0.05
+    assert session.paused is False
+    assert client.btw_calls[0]["runner_busy"] is True
+    assert "x" not in runner.namespace
+
+
+def test_tui_btw_command_keeps_session_running(tmp_path):
+    script = tmp_path / "demo.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    client = ScriptedActionClient({}, btw_responses=["I can answer while running"])
+    runner = AgenticRunner.from_path(script, decision_client=client, out_dir=tmp_path / "run")
+    session = InteractiveSession(runner)
+    log = TuiLog(log_level="INFO")
+
+    should_quit = _handle_input("/btw 当前loss怎么样", session, log)
+    session.wait_for_btw(timeout=1)
+    for message in session.drain_messages():
+        log.append(message, kind="agent")
+
+    rendered = log.render_lines(width=80, max_lines=10)
+
+    assert should_quit is False
+    assert session.paused is False
+    assert client.calls == []
+    assert client.btw_calls[0]["question"] == "当前loss怎么样"
+    assert any(line.text == "BTW       当前loss怎么样" for line in rendered)
+    assert any("I can answer while running" in line.text for line in rendered)
 
 
 def test_runner_can_send_stdout_to_event_sink_without_echoing(tmp_path):

@@ -33,6 +33,7 @@ class RenderedLogLine:
 
 _LABELS = {
     "agent": "AGENT",
+    "btw": "BTW",
     "error": "ERROR",
     "patch": "PATCH",
     "program": "OUT",
@@ -44,6 +45,7 @@ _LABELS = {
 
 _KIND_COLOR_PAIRS = {
     "agent": 5,
+    "btw": 3,
     "error": 8,
     "patch": 7,
     "program": 6,
@@ -217,6 +219,7 @@ def run_tui(
 ) -> None:
     log = TuiLog(log_level=log_level)
     client = CodexSdkDecisionClient(model=model)
+    session: InteractiveSession | None = None
     try:
         runner = AgenticRunner.from_path(
             script_path,
@@ -229,6 +232,8 @@ def run_tui(
         session = InteractiveSession(runner)
         curses.wrapper(_curses_main, session, log, step_delay)
     finally:
+        if session is not None:
+            session.wait_for_btw(timeout=0.2)
         client.close()
 
 
@@ -292,11 +297,21 @@ def _handle_input(text: str, session: InteractiveSession, log: TuiLog) -> bool:
         _drain_session_messages(session, log)
         return False
     if normalized in {"/help", "help", "帮助"}:
-        log.append("Use /pause to stop auto-run, /resume or /start to continue, /quit to exit.", kind="system")
+        log.append("Use /pause to stop auto-run, /resume or /start to continue, /btw <message> to chat, /quit to exit.", kind="system")
         log.append(
             "Type any natural-language instruction to send current context to Codex; it stays paused afterward.",
             kind="system",
         )
+        return False
+    if normalized == "/btw" or normalized.startswith("/btw "):
+        question = text[4:].strip()
+        if not question:
+            log.append("Usage: /btw <side question>", kind="system")
+            return False
+        log.append(question, kind="btw")
+        visible_log = [line.text for line in log.render_lines(width=120, max_lines=60)]
+        session.submit_btw(question, visible_log=visible_log)
+        _drain_session_messages(session, log)
         return False
 
     log.append(text, kind="user")
@@ -307,16 +322,23 @@ def _handle_input(text: str, session: InteractiveSession, log: TuiLog) -> bool:
 
 def _drain_session_messages(session: InteractiveSession, log: TuiLog) -> None:
     for message in session.drain_messages():
-        log.append(message, kind=_session_message_kind(message))
+        text, kind = _format_session_message(message)
+        log.append(text, kind=kind)
 
 
-def _session_message_kind(message: str) -> str:
+def _format_session_message(message: str) -> tuple[str, str]:
     lowered = message.lower()
+    if lowered.startswith("btw answer: "):
+        return message[len("btw answer: ") :], "agent"
+    if lowered.startswith("btw failed: "):
+        return message, "error"
+    if lowered.startswith("btw queued"):
+        return message, "trigger"
     if "instruction applied" in lowered:
-        return "agent"
+        return message, "agent"
     if "queued" in lowered:
-        return "trigger"
-    return "system"
+        return message, "trigger"
+    return message, "system"
 
 
 def _render(stdscr: Any, session: InteractiveSession, log: TuiLog, input_text: str) -> None:
@@ -338,7 +360,7 @@ def _render(stdscr: Any, session: InteractiveSession, log: TuiLog, input_text: s
     stdscr.addnstr(
         height - 2,
         0,
-        f" {status.upper()}  out={session.runner.out_dir}  commands=/pause /resume /quit",
+        f" {status.upper()}  out={session.runner.out_dir}  commands=/pause /resume /btw /quit",
         max(0, width - 1),
         _color_pair(2),
     )

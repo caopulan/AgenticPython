@@ -53,6 +53,8 @@ Commands:
 
 - `/pause` pauses automatic execution.
 - `/resume` or `/start` resumes.
+- `/btw <message>` asks Codex a side question without pausing execution or
+  patching the tape.
 - `/quit` exits and writes artifacts.
 - Any other text is sent to Codex as an instruction. The runtime applies the
   returned patch and stays paused until `/resume`.
@@ -90,4 +92,10 @@ Example live instruction:
 
 ```text
 下个 step 开始把 optimizer 的 lr 调成 0.01，并且在当前 instruction 后额外 evaluate 一次，把结果 append 到 evals。
+```
+
+Example non-interrupting side chat:
+
+```text
+/btw 当前 loss 看起来正常吗？
 ```

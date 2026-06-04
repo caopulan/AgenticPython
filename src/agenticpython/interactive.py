@@ -17,6 +17,7 @@ class InteractiveSession:
     _busy: bool = field(default=False, init=False)
     _pending_instruction: str | None = field(default=None, init=False)
     _stop_requested: bool = field(default=False, init=False)
+    _btw_threads: list[threading.Thread] = field(default_factory=list, init=False, repr=False)
 
     def tick(self) -> bool:
         with self._lock:
@@ -88,6 +89,59 @@ class InteractiveSession:
                 self.messages.append("instruction queued; current instruction will finish first")
             else:
                 self.messages.append("instruction queued for Codex")
+
+    def submit_btw(self, question: str, visible_log: list[str] | None = None) -> None:
+        with self._lock:
+            if self.finished:
+                self.messages.append("btw ignored; session is finished")
+                return
+            context = self._btw_context_locked(question, visible_log or [])
+            thread = threading.Thread(
+                target=self._run_btw,
+                args=(context,),
+                name="agenticpython-btw",
+                daemon=True,
+            )
+            self._btw_threads.append(thread)
+            self.messages.append("btw queued; execution continues")
+            thread.start()
+
+    def wait_for_btw(self, timeout: float | None = None) -> None:
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            with self._lock:
+                threads = list(self._btw_threads)
+            if not threads:
+                return
+            for thread in threads:
+                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                thread.join(timeout=remaining)
+            with self._lock:
+                self._btw_threads = [thread for thread in self._btw_threads if thread.is_alive()]
+                if not self._btw_threads:
+                    return
+            if deadline is not None and time.monotonic() >= deadline:
+                return
+
+    def _btw_context_locked(self, question: str, visible_log: list[str]) -> dict[str, object]:
+        return {
+            "question": question,
+            "paused": self.paused,
+            "finished": self.finished,
+            "runner_busy": self._busy,
+            "visible_log": visible_log[-40:],
+            "recent_events": list(self.runner.recent_events)[-20:],
+        }
+
+    def _run_btw(self, context: dict[str, object]) -> None:
+        try:
+            answer = self.runner.decision_client.ask_btw(context)
+        except Exception as exc:
+            with self._lock:
+                self.messages.append(f"btw failed: {exc}")
+            return
+        with self._lock:
+            self.messages.append(f"btw answer: {answer}")
 
     def _apply_instruction(self, instruction: str) -> None:
         self.runner.out_dir.mkdir(parents=True, exist_ok=True)
